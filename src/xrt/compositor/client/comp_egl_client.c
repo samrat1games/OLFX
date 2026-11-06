@@ -443,6 +443,21 @@ create_context(
 		}
 	}
 
+	// OLFX: Unity may create its context with no_error / debug flags; shared contexts must match.
+	if (our_context == EGL_NO_CONTEXT && api_type == EGL_OPENGL_ES_API) {
+		const EGLint ne[] = {EGL_CONTEXT_MAJOR_VERSION, major, EGL_CONTEXT_MINOR_VERSION, minor,
+		                     0x31B3 /*EGL_CONTEXT_OPENGL_NO_ERROR_KHR*/, EGL_TRUE, EGL_NONE};
+		const EGLint dbg[] = {EGL_CONTEXT_MAJOR_VERSION, major, EGL_CONTEXT_MINOR_VERSION, minor,
+		                      0x30FC /*EGL_CONTEXT_FLAGS_KHR*/, 1 /*DEBUG_BIT*/, EGL_NONE};
+		const EGLint *variants[2] = {ne, dbg};
+		const char *names[2] = {"no_error", "debug"};
+		for (int v = 0; v < 2 && our_context == EGL_NO_CONTEXT; v++) {
+			our_context = eglCreateContext(display, EGL_NO_CONFIG_KHR, app_context, variants[v]);
+			U_LOG_E("OLFX: share ctx with %s -> %s", names[v],
+			        our_context != EGL_NO_CONTEXT ? "ok" : egl_error_str(eglGetError()));
+		}
+	}
+
 	// OLFX diagnostics + protected-content variant (Adreno refuses to share protected with non-protected).
 	if (our_context == EGL_NO_CONTEXT && api_type == EGL_OPENGL_ES_API) {
 		const EGLint plain[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
