@@ -625,7 +625,11 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 
 	renderer_create_renderings_and_fences(r);
 
-	assert(r->buffer_count != 0);
+	// OLFX: surface can be lost (app window destroyed); fail gracefully instead of aborting the service.
+	if (r->buffer_count == 0) {
+		COMP_ERROR(r->c, "No swapchain images available (surface lost?)");
+		return false;
+	}
 
 	return true;
 }
