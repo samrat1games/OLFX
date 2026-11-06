@@ -318,8 +318,20 @@ create_context(
 	    api_type == EGL_OPENGL_API ? "opengl" : (api_type == EGL_OPENGL_ES_API ? "opengl_es" : "");
 
 	// Panfrost only supports 3.1
-	const EGLint major = 3;
-	const EGLint minor = 1;
+	EGLint major = 3;
+	EGLint minor = 1;
+#ifdef XRT_OS_ANDROID
+	// OLFX: Adreno refuses to share contexts of different minor versions (app 3.2 vs ours 3.1).
+	if (api_type == EGL_OPENGL_ES_API) {
+		EGLint app_major = 0, app_minor = 0;
+		if (eglQueryContext(display, app_context, 0x3098 /*EGL_CONTEXT_MAJOR_VERSION*/, &app_major) &&
+		    eglQueryContext(display, app_context, 0x30FB /*EGL_CONTEXT_MINOR_VERSION*/, &app_minor) &&
+		    app_major >= 3) {
+			major = app_major;
+			minor = app_minor;
+		}
+	}
+#endif
 
 	EGLint image_prio;
 	if (!eglQueryContext(display, app_context, EGL_CONTEXT_PRIORITY_LEVEL_IMG, &image_prio)) {
@@ -412,6 +424,41 @@ create_context(
 			U_LOG_E("OLFX: eglCreateContext no-config try %d -> %s", i,
 			        our_context != EGL_NO_CONTEXT ? "ok" : egl_error_str(eglGetError()));
 		}
+	}
+
+	// OLFX: app context may have no config; pick a real GLES3 config for our shared context.
+	if (our_context == EGL_NO_CONTEXT && api_type == EGL_OPENGL_ES_API) {
+		const EGLint cfg_attrs[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
+		                            EGL_BLUE_SIZE, 8, EGL_NONE};
+		EGLConfig picked = NULL;
+		EGLint n = 0;
+		if (eglChooseConfig(display, cfg_attrs, &picked, 1, &n) && n > 0) {
+			for (int i = 0; i != attrc && our_context == EGL_NO_CONTEXT; i++) {
+				our_context = eglCreateContext(display, picked, app_context, attrs[i]);
+				U_LOG_E("OLFX: eglCreateContext picked-config try %d -> %s", i,
+				        our_context != EGL_NO_CONTEXT ? "ok" : egl_error_str(eglGetError()));
+			}
+		} else {
+			U_LOG_E("OLFX: eglChooseConfig failed: %s", egl_error_str(eglGetError()));
+		}
+	}
+
+	// OLFX diagnostics + protected-content variant (Adreno refuses to share protected with non-protected).
+	if (our_context == EGL_NO_CONTEXT && api_type == EGL_OPENGL_ES_API) {
+		const EGLint plain[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+		EGLContext t = eglCreateContext(display, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, plain);
+		U_LOG_E("OLFX: unshared no-config ctx -> %s", t != EGL_NO_CONTEXT ? "ok" : egl_error_str(eglGetError()));
+		if (t != EGL_NO_CONTEXT) {
+			eglDestroyContext(display, t);
+		}
+		EGLint maj = -1, min = -1, cur_api = eglQueryAPI();
+		eglQueryContext(display, app_context, 0x3098 /*EGL_CONTEXT_MAJOR_VERSION*/, &maj);
+		eglQueryContext(display, app_context, 0x30FB /*EGL_CONTEXT_MINOR_VERSION*/, &min);
+		U_LOG_E("OLFX: app ctx %p dpy %p cur_dpy %p cur_ctx %p ver %d.%d api 0x%x", app_context, display,
+		        eglGetCurrentDisplay(), eglGetCurrentContext(), maj, min, cur_api);
+		const EGLint prot[] = {EGL_CONTEXT_CLIENT_VERSION, 3, 0x32C0 /*EGL_PROTECTED_CONTENT_EXT*/, EGL_TRUE, EGL_NONE};
+		our_context = eglCreateContext(display, EGL_NO_CONFIG_KHR, app_context, prot);
+		U_LOG_E("OLFX: protected-share ctx -> %s", our_context != EGL_NO_CONTEXT ? "ok" : egl_error_str(eglGetError()));
 	}
 
 	// OLFX: some drivers (e.g. Adreno on Samsung) reject the explicit major/minor share attributes.
