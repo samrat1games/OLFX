@@ -8,6 +8,10 @@
         tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -34,6 +38,18 @@
         <activity android:name=".RuntimeActivity" android:exported="false" />
 
         <receiver android:name=".InstallResultReceiver" android:exported="false" />
+
+        <!-- Screen recorder: side menu overlay, consent activity, recording service -->
+        <service android:name=".MenuService" android:exported="false" />
+        <service
+            android:name=".RecordService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+        <activity
+            android:name=".ProjectionRequestActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!--
             OpenXR runtime broker. The OpenXR loader inside every game queries this provider to

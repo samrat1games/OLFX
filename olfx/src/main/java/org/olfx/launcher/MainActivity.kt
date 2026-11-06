@@ -38,6 +38,11 @@ class MainActivity : AppCompatActivity() {
             text = "OLFX"; textSize = 28f; typeface = Typeface.DEFAULT_BOLD; setTextColor(C.TEXT)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(TextView(this).apply {
+            text = "Запись"; textSize = 14f; setTextColor(C.ACCENT); typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener { toggleRecordMenu() }
+        })
+        header.addView(TextView(this).apply {
             text = "Runtimes"; textSize = 14f; setTextColor(C.ACCENT); typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(12), dp(8), dp(12), dp(8))
             setOnClickListener { startActivity(Intent(this@MainActivity, RuntimeActivity::class.java)) }
@@ -76,6 +81,21 @@ class MainActivity : AppCompatActivity() {
         root.addView(rv, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
         refilter()
+    }
+
+    private fun toggleRecordMenu() {
+        if (!android.provider.Settings.canDrawOverlays(this)) {
+            android.widget.Toast.makeText(this, "Разрешите OLFX показываться поверх других приложений", android.widget.Toast.LENGTH_LONG).show()
+            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
+            return
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 5)
+        }
+        startForegroundService(Intent(this, MenuService::class.java))
+        android.widget.Toast.makeText(this, "Меню записи включено: ‹› слева на экране", android.widget.Toast.LENGTH_LONG).show()
     }
 
     override fun onResume() {
