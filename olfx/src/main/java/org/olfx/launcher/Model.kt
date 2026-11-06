@@ -8,6 +8,9 @@ import android.graphics.drawable.Drawable
 import java.io.File
 
 const val VR_CATEGORY = "com.oculus.intent.category.VR"
+const val YVR_CATEGORY = "com.yvr.intent.category.VR"
+const val XR_CATEGORY = "org.khronos.openxr.intent.category.IMMERSIVE_HMD"
+val XR_CATEGORIES = listOf(VR_CATEGORY, YVR_CATEGORY, XR_CATEGORY)
 
 data class AppEntry(
     val pkg: String,
@@ -20,16 +23,17 @@ data class AppEntry(
 
 @Suppress("DEPRECATION")
 object AppScanner {
+    /** Only OpenXR / Meta Quest / Pico apps; ordinary Android apps are not listed. */
     fun scan(ctx: Context): List<AppEntry> {
         val pm = ctx.packageManager
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val vr = Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY)
-        val vrPkgs = pm.queryIntentActivities(vr, 0).map { it.activityInfo.packageName }.toSet()
-        return (pm.queryIntentActivities(launcher, 0) + pm.queryIntentActivities(vr, 0))
+        val intents = listOf(launcher) + XR_CATEGORIES.map { Intent(Intent.ACTION_MAIN).addCategory(it) }
+        return intents.flatMap { pm.queryIntentActivities(it, 0) }
             .map { it.activityInfo.packageName }
             .distinct()
             .filter { it != ctx.packageName }
-            .mapNotNull { entry(ctx, it, it in vrPkgs) }
+            .mapNotNull { entry(ctx, it, false) }
+            .filter { it.openXr || it.quest || it.pico }
             .sortedBy { it.label.lowercase() }
     }
 
@@ -40,16 +44,21 @@ object AppScanner {
             val ai = pi.applicationInfo ?: return null
             val keys = ai.metaData?.keySet() ?: emptySet<String>()
             val features = pi.reqFeatures?.mapNotNull { it.name } ?: emptyList()
+            val cats = XR_CATEGORIES.filter { c ->
+                pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(c).setPackage(pkg), 0).isNotEmpty()
+            }.toSet()
             val quest =
-                hasVrCategory ||
+                hasVrCategory || VR_CATEGORY in cats ||
                     pkg.startsWith("com.oculus.") || pkg.startsWith("com.meta.") ||
                     keys.any { it.startsWith("com.oculus.") } ||
                     features.any { it.startsWith("oculus.") }
             val pico =
-                pkg.startsWith("com.pico") || pkg.startsWith("com.picovr") || pkg.startsWith("com.pvr") ||
+                YVR_CATEGORY in cats ||
+                    pkg.startsWith("com.pico") || pkg.startsWith("com.picovr") || pkg.startsWith("com.pvr") ||
                     keys.any { it.startsWith("pvr.") || it.startsWith("pico.") || it.startsWith("com.pvr.") }
             val openXr =
-                File(ai.nativeLibraryDir ?: "", "libopenxr_loader.so").exists() ||
+                XR_CATEGORY in cats || quest ||
+                    File(ai.nativeLibraryDir ?: "", "libopenxr_loader.so").exists() ||
                     features.any { it.contains("openxr", true) || it == "android.hardware.vr.headtracking" }
             AppEntry(pkg, ai.loadLabel(pm).toString(), ai.loadIcon(pm), quest, pico, openXr)
         } catch (e: Exception) {

@@ -99,6 +99,9 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun play() {
+        if (Runtimes.list(this).isEmpty()) {
+            Toast.makeText(this, "No OpenXR runtime installed (Monado / OculusXR / Pico) — the game may not start in VR", Toast.LENGTH_LONG).show()
+        }
         val i = AppScanner.playIntent(this, entry)
         if (i == null) { Toast.makeText(this, "No launchable activity", Toast.LENGTH_SHORT).show(); return }
         try { startActivity(i) } catch (ex: Exception) {

@@ -34,7 +34,7 @@ fun Context.badge(text: String, color: Int) = TextView(this).apply {
     typeface = Typeface.DEFAULT_BOLD
     setTextColor(Color.WHITE)
     gravity = Gravity.CENTER
-    setPadding(dp(8), dp(2), dp(8), dp(2))
+    setPadding(dp(10), dp(4), dp(10), dp(4)); minHeight = dp(24)
     background = round(color, dp(10).toFloat())
 }
 
