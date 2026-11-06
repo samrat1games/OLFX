@@ -28,6 +28,7 @@ class DetailActivity : AppCompatActivity() {
     private lateinit var entry: AppEntry
     private lateinit var favBtn: TextView
     private lateinit var rtBtn: TextView
+    private lateinit var patchBtn: TextView
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -66,6 +67,8 @@ class DetailActivity : AppCompatActivity() {
         // Extras
         favBtn = button("", false) { prefs.toggleFav(e.pkg); updateButtons() }
         rtBtn = button("", false) { pickRuntime() }
+        patchBtn = button("", false) { pickPatch() }
+        col.addView(patchBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(rtBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(favBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
 
@@ -96,9 +99,39 @@ class DetailActivity : AppCompatActivity() {
         val rt = prefs.appRuntime(entry.pkg)
         val name = if (rt == "auto") "Auto" else Runtimes.list(this).firstOrNull { it.pkg == rt }?.label ?: rt
         rtBtn.text = "OpenXR runtime: $name"
+        patchBtn.text = "Патч: ${Profiles.title(prefs.profile(entry.pkg))}"
     }
 
     private fun play() {
+        if (prefs.profile(entry.pkg) == Profiles.NONE) {
+            AlertDialog.Builder(this)
+                .setTitle("Игра не пропатчена")
+                .setMessage("Без патча игра может сильно грузить память и лагать. Точно хотите запустить?")
+                .setPositiveButton("Да") { _, _ -> launchGame() }
+                .setNegativeButton("Нет", null)
+                .show()
+        } else {
+            launchGame()
+        }
+    }
+
+    private fun pickPatch() {
+        val ids = listOf(Profiles.OPT, Profiles.IMMERSIVE, Profiles.NONE)
+        val labels = arrayOf(
+            "Оптимизация — меньше памяти, плавная голова (${Profiles.scale(Profiles.OPT)}%)",
+            "Нормальное погружение — баланс (${Profiles.scale(Profiles.IMMERSIVE)}%)",
+            "Снять патч",
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Патч для ${entry.label}")
+            .setSingleChoiceItems(labels, ids.indexOf(prefs.profile(entry.pkg)).coerceAtLeast(0)) { d, i ->
+                prefs.setProfile(entry.pkg, ids[i]); updateButtons(); d.dismiss()
+            }
+            .show()
+    }
+
+    private fun launchGame() {
+        prefs.currentScale = Profiles.scale(prefs.profile(entry.pkg))
         if (Runtimes.list(this).isEmpty()) {
             Toast.makeText(this, "No OpenXR runtime installed (Monado / OculusXR / Pico) — the game may not start in VR", Toast.LENGTH_LONG).show()
         }

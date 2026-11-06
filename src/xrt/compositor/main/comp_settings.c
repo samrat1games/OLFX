@@ -8,6 +8,7 @@
  * @ingroup comp_main
  */
 
+#include <stdlib.h>
 #include "util/u_debug.h"
 #include "comp_settings.h"
 
@@ -31,12 +32,25 @@ DEBUG_GET_ONCE_NUM_OPTION(force_gpu_index, "XRT_COMPOSITOR_FORCE_GPU_INDEX", -1)
 DEBUG_GET_ONCE_NUM_OPTION(force_client_gpu_index, "XRT_COMPOSITOR_FORCE_CLIENT_GPU_INDEX", -1)
 DEBUG_GET_ONCE_NUM_OPTION(desired_mode, "XRT_COMPOSITOR_DESIRED_MODE", -1)
 DEBUG_GET_ONCE_OPTION(present_mode, "XRT_COMPOSITOR_PRESENT_MODE", "fifo")
-// OLFX: phones/tablets cannot afford the 140% desktop default (memory + GPU), use a lighter default.
+// OLFX: phones/tablets cannot afford the 140% desktop default; and the value must be re-read for every
+// session (the Android service process is reused between games, OLFX sets the env per game).
+static int
+olfx_scale_percentage(void)
+{
 #ifdef XRT_OS_ANDROID
-DEBUG_GET_ONCE_NUM_OPTION(scale_percentage, "XRT_COMPOSITOR_SCALE_PERCENTAGE", 80)
+	int def = 80;
 #else
-DEBUG_GET_ONCE_NUM_OPTION(scale_percentage, "XRT_COMPOSITOR_SCALE_PERCENTAGE", 140)
+	int def = 140;
 #endif
+	const char *e = getenv("XRT_COMPOSITOR_SCALE_PERCENTAGE");
+	if (e != NULL && e[0] != '\0') {
+		int v = atoi(e);
+		if (v > 0) {
+			return v;
+		}
+	}
+	return def;
+}
 DEBUG_GET_ONCE_BOOL_OPTION(xcb_fullscreen, "XRT_COMPOSITOR_XCB_FULLSCREEN", false)
 DEBUG_GET_ONCE_NUM_OPTION(xcb_display, "XRT_COMPOSITOR_XCB_DISPLAY", -1)
 DEBUG_GET_ONCE_NUM_OPTION(default_framerate, "XRT_COMPOSITOR_DEFAULT_FRAMERATE", 60)
@@ -177,7 +191,7 @@ comp_settings_init(struct comp_settings *s, struct xrt_device *xdev)
 	s->selected_gpu_index = debug_get_num_option_force_gpu_index();
 	s->client_gpu_index = debug_get_num_option_force_client_gpu_index();
 	s->desired_mode = debug_get_num_option_desired_mode();
-	s->viewport_scale = debug_get_num_option_scale_percentage() / 100.0;
+	s->viewport_scale = olfx_scale_percentage() / 100.0;
 
 
 	s->nvidia_display = debug_get_option_nvidia_display();

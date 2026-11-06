@@ -20,6 +20,12 @@ class RuntimeBrokerProvider : ContentProvider() {
     ): Cursor? {
         val ctx = context ?: return null
         val seg = uri.pathSegments
+        // Profile of the game being launched: read by the Monado service at start-up.
+        if (seg.size == 3 && seg[0] == "olfx" && seg[1] == "profile" && seg[2] == "current") {
+            val c = MatrixCursor(arrayOf("scale"))
+            c.addRow(arrayOf<Any>(Prefs(ctx).currentScale))
+            return c
+        }
         if (seg.size < 2 || seg[0] != "openxr" || !uri.path.orEmpty().contains("runtimes/active")) return null
 
         // /functions sub-path: we expose no function remapping.

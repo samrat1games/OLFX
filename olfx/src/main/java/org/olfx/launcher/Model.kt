@@ -96,6 +96,34 @@ class Prefs(ctx: Context) {
         get() = sp.getString("rt_default", "auto") ?: "auto"
         set(v) = sp.edit().putString("rt_default", v).apply()
 
+    /** Patch profile per game: "none", "opt" (optimisation) or "immersive". */
+    fun profile(pkg: String): String = sp.getString("profile_$pkg", "none") ?: "none"
+    fun setProfile(pkg: String, v: String) = sp.edit().putString("profile_$pkg", v).apply()
+
+    /** Compositor scale (percent) Monado should use for the game being launched right now. */
+    var currentScale: Int
+        get() = sp.getInt("current_scale", 100)
+        set(v) = sp.edit().putInt("current_scale", v).apply()
+
     fun appRuntime(pkg: String): String = sp.getString("rt_app_$pkg", "auto") ?: "auto"
     fun setAppRuntime(pkg: String, rt: String) = sp.edit().putString("rt_app_$pkg", rt).apply()
+}
+
+object Profiles {
+    const val NONE = "none"
+    const val OPT = "opt"
+    const val IMMERSIVE = "immersive"
+
+    /** Compositor scale in percent for each profile (unpatched games get the full default). */
+    fun scale(profile: String) = when (profile) {
+        OPT -> 50
+        IMMERSIVE -> 85
+        else -> 100
+    }
+
+    fun title(profile: String) = when (profile) {
+        OPT -> "Оптимизация"
+        IMMERSIVE -> "Нормальное погружение"
+        else -> "Не пропатчено"
+    }
 }

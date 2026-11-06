@@ -43,7 +43,34 @@ public class MonadoImpl extends IMonado.Stub {
 
     public MonadoImpl(@NonNull Context context) {
         this.context = context.getApplicationContext();
+        applyOlfxProfile(this.context);
         nativeStartServer(this.context);
+    }
+
+    /**
+     * OLFX: ask the OLFX launcher (runtime broker provider) which render scale the game that is
+     * about to run should get, and hand it to the compositor through its environment option.
+     */
+    private static void applyOlfxProfile(Context ctx) {
+        try (android.database.Cursor c =
+                ctx.getContentResolver()
+                        .query(
+                                android.net.Uri.parse(
+                                        "content://org.khronos.openxr.runtime_broker/olfx/profile/current"),
+                                null,
+                                null,
+                                null,
+                                null)) {
+            if (c != null && c.moveToFirst()) {
+                int scale = c.getInt(c.getColumnIndexOrThrow("scale"));
+                if (scale >= 25 && scale <= 200) {
+                    android.system.Os.setenv("XRT_COMPOSITOR_SCALE_PERCENTAGE", Integer.toString(scale), true);
+                    Log.i(TAG, "OLFX profile: compositor scale " + scale + "%");
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "OLFX profile unavailable: " + e);
+        }
     }
 
     @Override
