@@ -404,6 +404,39 @@ create_context(
 		print_egl_attrs(attrs[i]);
 	}
 
+	// OLFX: Unity/OVRPlugin creates its context with EGL_KHR_no_config_context (config id 0).
+	// A shared context must then also be created without a config.
+	if (our_context == EGL_NO_CONTEXT) {
+		for (int i = 0; i != attrc && our_context == EGL_NO_CONTEXT; i++) {
+			our_context = eglCreateContext(display, EGL_NO_CONFIG_KHR, app_context, attrs[i]);
+			U_LOG_E("OLFX: eglCreateContext no-config try %d -> %s", i,
+			        our_context != EGL_NO_CONTEXT ? "ok" : egl_error_str(eglGetError()));
+		}
+	}
+
+	// OLFX: some drivers (e.g. Adreno on Samsung) reject the explicit major/minor share attributes.
+	// Fall back to the legacy client-version attribute matching the app context.
+	if (our_context == EGL_NO_CONTEXT && api_type == EGL_OPENGL_ES_API) {
+		EGLint app_ver = 0;
+		if (!eglQueryContext(display, app_context, EGL_CONTEXT_CLIENT_VERSION, &app_ver) || app_ver < 2) {
+			app_ver = 3;
+		}
+		EGLint try_vers[2] = {app_ver, app_ver == 3 ? 2 : 3};
+		for (int v = 0; v < 2 && our_context == EGL_NO_CONTEXT; v++) {
+			const EGLint legacy[] = {EGL_CONTEXT_CLIENT_VERSION, try_vers[v], EGL_NONE};
+			our_context = eglCreateContext(display, config, app_context, legacy);
+			U_LOG_E("OLFX: eglCreateContext legacy version %d -> %s", try_vers[v],
+			        our_context != EGL_NO_CONTEXT ? "ok" : egl_error_str(eglGetError()));
+		}
+		if (our_context == EGL_NO_CONTEXT) {
+			// Last resort: no sharing config mismatch info; log what the app context looks like.
+			EGLint cfg_id = 0, prio = 0;
+			eglQueryContext(display, app_context, EGL_CONFIG_ID, &cfg_id);
+			eglQueryContext(display, app_context, EGL_CONTEXT_PRIORITY_LEVEL_IMG, &prio);
+			U_LOG_E("OLFX: app context: version=%d config_id=%d prio=0x%x", app_ver, cfg_id, prio);
+		}
+	}
+
 	// Restore old API type.
 	if (old_api_type == EGL_NONE) {
 		eglBindAPI(old_api_type);
