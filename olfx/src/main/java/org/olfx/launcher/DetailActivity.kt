@@ -99,11 +99,18 @@ class DetailActivity : AppCompatActivity() {
         val rt = prefs.appRuntime(entry.pkg)
         val name = if (rt == "auto") "Auto" else Runtimes.list(this).firstOrNull { it.pkg == rt }?.label ?: rt
         rtBtn.text = "OpenXR runtime: $name"
-        patchBtn.text = "Патч: ${Profiles.title(prefs.profile(entry.pkg))}"
+        val apk = ApkPatch.marker(this, entry.pkg)
+        patchBtn.text = if (apk != null) "Патч APK: ${Profiles.title(apk)}" else "Патч: ${Profiles.title(prefs.profile(entry.pkg))}"
+    }
+
+    /** APK patch marker wins; otherwise the profile chosen in OLFX. */
+    private fun effectiveProfile(): String {
+        val m = ApkPatch.marker(this, entry.pkg)
+        return if (m == Profiles.OPT || m == Profiles.IMMERSIVE) m else prefs.profile(entry.pkg)
     }
 
     private fun play() {
-        if (prefs.profile(entry.pkg) == Profiles.NONE) {
+        if (effectiveProfile() == Profiles.NONE) {
             AlertDialog.Builder(this)
                 .setTitle("Игра не пропатчена")
                 .setMessage("Без патча игра может сильно грузить память и лагать. Точно хотите запустить?")
@@ -131,7 +138,7 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun launchGame() {
-        prefs.currentScale = Profiles.scale(prefs.profile(entry.pkg))
+        prefs.currentScale = Profiles.scale(effectiveProfile())
         if (Runtimes.list(this).isEmpty()) {
             Toast.makeText(this, "No OpenXR runtime installed (Monado / OculusXR / Pico) — the game may not start in VR", Toast.LENGTH_LONG).show()
         }

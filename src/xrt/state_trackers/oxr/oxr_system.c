@@ -133,6 +133,12 @@ fill_in_view_config_properties_views(struct oxr_logger *log,
 		uint32_t w = MIN(view_config->views[i].recommended.width_pixels, w_max);
 		uint32_t h = MIN(view_config->views[i].recommended.height_pixels, h_max);
 
+#ifdef XRT_OS_ANDROID
+		// OLFX: Unity's Meta plugin allocates swapchains at the advertised maximum (gigabytes on a
+		// tablet); do not advertise more than we recommend.
+		w_max = w;
+		h_max = h;
+#endif
 		xr_views[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
 		xr_views[i].recommendedImageRectWidth = w;
 		xr_views[i].maxImageRectWidth = w_max;

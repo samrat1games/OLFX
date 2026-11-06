@@ -31,7 +31,7 @@ object AppScanner {
         return intents.flatMap { pm.queryIntentActivities(it, 0) }
             .map { it.activityInfo.packageName }
             .distinct()
-            .filter { it != ctx.packageName }
+            .filter { it != ctx.packageName && !it.startsWith("org.freedesktop.monado") && !it.startsWith("com.android.chrome") && !it.startsWith("com.google.") }
             .mapNotNull { entry(ctx, it, false) }
             .filter { it.openXr || it.quest || it.pico }
             .sortedBy { it.label.lowercase() }
@@ -125,5 +125,20 @@ object Profiles {
         OPT -> "Оптимизация"
         IMMERSIVE -> "Нормальное погружение"
         else -> "Не пропатчено"
+    }
+}
+
+/** Reads the `olfx-patched=<mode>` marker the OLFX APK patcher writes into a Unity game's boot.config. */
+object ApkPatch {
+    fun marker(ctx: Context, pkg: String): String? = try {
+        val src = ctx.packageManager.getApplicationInfo(pkg, 0).sourceDir
+        java.util.zip.ZipFile(src).use { z ->
+            val e = z.getEntry("assets/bin/Data/boot.config") ?: return null
+            z.getInputStream(e).bufferedReader().useLines { lines ->
+                lines.firstOrNull { it.startsWith("olfx-patched=") }?.substringAfter('=')?.trim()
+            }
+        }
+    } catch (e: Exception) {
+        null
     }
 }
