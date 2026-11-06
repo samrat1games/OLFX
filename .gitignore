@@ -117,3 +117,8 @@ result/
 
 # Kotlin
 .kotlin
+
+local.properties
+.gradle/
+build/
+.idea/

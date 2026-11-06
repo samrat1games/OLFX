@@ -44,3 +44,6 @@ include ':src:xrt:targets:android_common'
 // to make an installable APK providing a runtime with a Cardboard-like experience
 // by default.
 include ':src:xrt:targets:openxr_android'
+
+// OLFX: simple VR app launcher + OpenXR runtime broker (Monado / Meta Quest / Pico)
+include ':olfx'

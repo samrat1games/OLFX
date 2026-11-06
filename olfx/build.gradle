@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: BSL-1.0
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+}
+
+android {
+    namespace 'org.olfx.launcher'
+    compileSdk project.sharedCompileSdk
+
+    defaultConfig {
+        applicationId 'org.olfx.launcher'
+        minSdkVersion project.sharedMinSdk
+        targetSdkVersion project.sharedTargetSdk
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.recyclerview:recyclerview:$androidxRecyclerViewVersion"
+}

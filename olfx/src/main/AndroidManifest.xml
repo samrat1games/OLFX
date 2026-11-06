@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- A launcher has to see every installed app. -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.OLFX">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".DetailActivity" android:exported="false" />
+        <activity android:name=".RuntimeActivity" android:exported="false" />
+
+        <!--
+            OpenXR runtime broker. The OpenXR loader inside every game queries this provider to
+            find out which runtime (.so) to load. OLFX answers per calling app:
+            Monado by default, the OculusXR runtime for Meta Quest games and the Pico runtime for
+            Pico games (when installed on the device), or whatever the user pinned.
+            Uninstall the standalone Khronos broker app: authorities must be unique.
+        -->
+        <provider
+            android:name=".RuntimeBrokerProvider"
+            android:authorities="org.khronos.openxr.runtime_broker"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+</manifest>

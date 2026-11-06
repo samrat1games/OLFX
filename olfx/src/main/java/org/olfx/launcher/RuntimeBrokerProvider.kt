@@ -1,0 +1,39 @@
+package org.olfx.launcher
+
+import android.content.ContentProvider
+import android.content.ContentValues
+import android.database.Cursor
+import android.database.MatrixCursor
+import android.net.Uri
+
+/**
+ * Implements the Khronos OpenXR runtime-broker protocol:
+ *   content://org.khronos.openxr.runtime_broker/openxr/1/abi/<abi>/runtimes/active
+ * columns: base_path, so_filename, has_functions
+ */
+class RuntimeBrokerProvider : ContentProvider() {
+    override fun onCreate() = true
+
+    override fun query(
+        uri: Uri, projection: Array<String>?, selection: String?,
+        selectionArgs: Array<String>?, sortOrder: String?,
+    ): Cursor? {
+        val ctx = context ?: return null
+        val seg = uri.pathSegments
+        if (seg.size < 2 || seg[0] != "openxr" || !uri.path.orEmpty().contains("runtimes/active")) return null
+
+        // /functions sub-path: we expose no function remapping.
+        if (seg.last() == "functions") {
+            return MatrixCursor(arrayOf("function_name", "symbol_name"))
+        }
+        val cols = arrayOf("base_path", "so_filename", "has_functions")
+        val c = MatrixCursor(cols)
+        Runtimes.resolve(ctx, callingPackage)?.let { c.addRow(arrayOf<Any>(it.basePath, it.so, 0)) }
+        return c
+    }
+
+    override fun getType(uri: Uri): String? = null
+    override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?) = 0
+    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?) = 0
+}
