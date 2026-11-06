@@ -34,3 +34,9 @@ monado_add_openxr_runtime(
 	SOURCES target.c
 	LINK_LIBRARIES ${_libs}
 	)
+
+# OLFX: never dlclose the runtime. The OpenXR loader unloads/reloads runtimes between probes, and
+# thread_local destructors left in the unloaded library crash apps (SIGSEGV in __cxa_thread_finalize).
+if(ANDROID)
+	target_link_options(${RUNTIME_TARGET} PRIVATE -Wl,-z,nodelete)
+endif()
