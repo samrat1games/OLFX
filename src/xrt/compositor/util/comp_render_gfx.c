@@ -496,6 +496,11 @@ do_quad_layer(struct render_gfx *render,
 static void
 crg_clear_output(struct render_gfx *render, const struct comp_render_dispatch_data *d)
 {
+	// OLFX: no render target while the surface is being torn down (app closed); do not crash the service.
+	if (d->target.gfx.rtr == NULL) {
+		return;
+	}
+
 	render_gfx_begin_target(     //
 	    render,                  //
 	    d->target.gfx.rtr,       //
