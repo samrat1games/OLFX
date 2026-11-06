@@ -7,6 +7,7 @@
  * @ingroup oxr_main
  */
 
+#include "util/u_logging.h"
 #include "os/os_threading.h"
 
 #include "util/u_misc.h"
@@ -483,6 +484,14 @@ oxr_poll_event(struct oxr_logger *log, struct oxr_instance *inst, XrEventDataBuf
 	ret = event->result;
 	memcpy(eventData, oxr_event_extra(event), event->length);
 	free(event);
+	{
+		// OLFX debug: log the first events handed to apps.
+		static int olfx_logged = 0;
+		if (olfx_logged < 40) {
+			olfx_logged++;
+			U_LOG_E("OLFX: xrPollEvent -> type %d result %d", (int)eventData->type, (int)ret);
+		}
+	}
 
 	return ret;
 }
