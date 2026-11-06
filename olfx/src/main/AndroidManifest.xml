@@ -7,6 +7,7 @@
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -31,6 +32,8 @@
         </activity>
         <activity android:name=".DetailActivity" android:exported="false" />
         <activity android:name=".RuntimeActivity" android:exported="false" />
+
+        <receiver android:name=".InstallResultReceiver" android:exported="false" />
 
         <!--
             OpenXR runtime broker. The OpenXR loader inside every game queries this provider to

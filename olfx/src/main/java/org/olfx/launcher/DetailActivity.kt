@@ -29,6 +29,7 @@ class DetailActivity : AppCompatActivity() {
     private lateinit var favBtn: TextView
     private lateinit var rtBtn: TextView
     private lateinit var patchBtn: TextView
+    private val reqUninstall = 77
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -69,6 +70,7 @@ class DetailActivity : AppCompatActivity() {
         rtBtn = button("", false) { pickRuntime() }
         patchBtn = button("", false) { pickPatch() }
         col.addView(patchBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
+        col.addView(button("Модифицировать APK", false) { chooseApkMode() }, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(rtBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(favBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
 
@@ -119,6 +121,66 @@ class DetailActivity : AppCompatActivity() {
                 .show()
         } else {
             launchGame()
+        }
+    }
+
+    private fun chooseApkMode() {
+        val modes = listOf(Profiles.OPT, Profiles.IMMERSIVE)
+        AlertDialog.Builder(this)
+            .setTitle("Модифицировать APK: ${entry.label}")
+            .setItems(arrayOf("Оптимизация — меньше памяти и нагрузки", "Нормальное погружение — ближе к оригиналу")) { _, i ->
+                runApkPatch(modes[i])
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun runApkPatch(mode: String) {
+        val dlg = AlertDialog.Builder(this).setTitle("Патч APK").setMessage("Подготовка…").setCancelable(false).show()
+        Thread {
+            try {
+                val f = ApkPatcher.patch(this, entry.pkg, mode) { msg -> runOnUiThread { dlg.setMessage(msg) } }
+                runOnUiThread { dlg.dismiss(); confirmInstall(f, mode) }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dlg.dismiss()
+                    AlertDialog.Builder(this).setTitle("Не удалось").setMessage(e.message ?: e.toString()).setPositiveButton("Ок", null).show()
+                }
+            }
+        }.start()
+    }
+
+    private var pendingApk: java.io.File? = null
+
+    private fun confirmInstall(apk: java.io.File, mode: String) {
+        pendingApk = apk
+        AlertDialog.Builder(this)
+            .setTitle("APK готов (${Profiles.title(mode)})")
+            .setMessage(
+                "Файл: ${apk.absolutePath}\n\nПодпись изменилась, поэтому оригинал нужно удалить: " +
+                    "сохранения внутри игры и её OBB-файлы будут стёрты. Удалить оригинал и установить патч?"
+            )
+            .setPositiveButton("Да, установить") { _, _ ->
+                @Suppress("DEPRECATION")
+                startActivityForResult(
+                    Intent(Intent.ACTION_DELETE, Uri.parse("package:${entry.pkg}")).putExtra(Intent.EXTRA_RETURN_RESULT, true),
+                    reqUninstall,
+                )
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == reqUninstall && resultCode == RESULT_OK) {
+            pendingApk?.let {
+                try { Installer.install(this, it) } catch (e: Exception) {
+                    Toast.makeText(this, "Установка: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
