@@ -401,10 +401,16 @@ oxr_instance_create(struct oxr_logger *log,
 	    createInfo, XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR, XrInstanceCreateInfoAndroidKHR);
 	/// @todo should be removed once we find a proper way to access JavaVM/context through
 	///       xrt_instance_android interface
-	android_globals_store_vm_and_activity((struct _JavaVM *)create_info_android->applicationVM,
-	                                      create_info_android->applicationActivity);
-	i_info.platform_info.vm = (struct _JavaVM *)create_info_android->applicationVM;
-	i_info.platform_info.context = create_info_android->applicationActivity;
+	if (create_info_android != NULL) {
+		android_globals_store_vm_and_activity((struct _JavaVM *)create_info_android->applicationVM,
+		                                      create_info_android->applicationActivity);
+		i_info.platform_info.vm = (struct _JavaVM *)create_info_android->applicationVM;
+		i_info.platform_info.context = create_info_android->applicationActivity;
+	} else {
+		// OLFX: app used loader init data only (Meta Quest / Pico style).
+		i_info.platform_info.vm = android_globals_get_vm();
+		i_info.platform_info.context = android_globals_get_context();
+	}
 #endif
 
 

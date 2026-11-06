@@ -26,9 +26,9 @@ class RuntimeBrokerProvider : ContentProvider() {
         if (seg.last() == "functions") {
             return MatrixCursor(arrayOf("function_name", "symbol_name"))
         }
-        val cols = arrayOf("base_path", "so_filename", "has_functions")
+        val cols = arrayOf("package_name", "so_filename", "native_lib_dir", "base_path", "has_functions")
         val c = MatrixCursor(cols)
-        Runtimes.resolve(ctx, callingPackage)?.let { c.addRow(arrayOf<Any>(it.basePath, it.so, 0)) }
+        Runtimes.resolve(ctx, callingPackage)?.let { c.addRow(arrayOf<Any>(it.pkg, it.so, it.basePath, it.basePath, 0)) }
         return c
     }
 

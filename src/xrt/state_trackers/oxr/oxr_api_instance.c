@@ -98,11 +98,16 @@ oxr_check_android_extensions(struct oxr_logger *log,
                              const struct oxr_extension_status *extensions)
 {
 	// We need the XR_KHR_android_create_instance extension.
+	// OLFX: Meta Quest / Pico apps do not enable it; they rely on xrInitializeLoaderKHR instead,
+	// so fall back to the VM/context stored there.
 	if (!extensions->KHR_android_create_instance) {
-		return oxr_error(log, XR_ERROR_INITIALIZATION_FAILED,
-		                 "(createInfo->enabledExtensionNames) "
-		                 "Mandatory platform-specific extension " XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME
-		                 " not specified");
+		if (android_globals_get_vm() == NULL || android_globals_get_context() == NULL) {
+			return oxr_error(log, XR_ERROR_INITIALIZATION_FAILED,
+			                 "(createInfo->enabledExtensionNames) "
+			                 "Platform-specific extension " XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME
+			                 " not specified and no loader init data available");
+		}
+		return XR_SUCCESS;
 	}
 
 	{
