@@ -143,6 +143,9 @@ object ApkPatch {
     fun marker(ctx: Context, pkg: String): String? = try {
         val src = ctx.packageManager.getApplicationInfo(pkg, 0).sourceDir
         java.util.zip.ZipFile(src).use { z ->
+            z.getEntry("assets/olfx-patch")?.let { m ->
+                return z.getInputStream(m).bufferedReader().readText().trim().ifEmpty { null }
+            }
             val e = z.getEntry("assets/bin/Data/boot.config") ?: return null
             z.getInputStream(e).bufferedReader().useLines { lines ->
                 lines.firstOrNull { it.startsWith("olfx-patched=") }?.substringAfter('=')?.trim()

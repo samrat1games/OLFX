@@ -19,7 +19,7 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 /**
- * On-device APK patcher for Unity games.
+ * On-device APK patcher for Quest/Pico VR games (Unity, Unreal, native OpenXR).
  *
  * Copies the installed APK, rewrites `assets/bin/Data/boot.config` with performance / memory options,
  * drops unused ABIs, re-aligns native libraries (16 KB) and signs the result (v1+v2) with a key kept in
@@ -150,6 +150,7 @@ object ApkPatcher {
                         val n = e.name
                         // old signature is invalid after the change
                         if (n.startsWith("META-INF/") && (n.endsWith(".SF") || n.endsWith(".RSA") || n.endsWith(".DSA") || n.endsWith(".EC") || n == "META-INF/MANIFEST.MF")) continue
+                        if (n == "assets/olfx-patch") continue // rewritten below
                         // drop unused ABIs on arm64 devices (smaller install, less to map)
                         if (hasArm64 && (n.startsWith("lib/armeabi") || n.startsWith("lib/x86"))) continue
 
@@ -195,10 +196,13 @@ object ApkPatcher {
                         }
                         zout.closeEntry()
                     }
+                    // Patch marker for every kind of game (Unity's boot.config only exists in Unity games).
+                    zout.putNextEntry(ZipEntry("assets/olfx-patch"))
+                    zout.write(mode.toByteArray())
+                    zout.closeEntry()
                 }
             }
         }
-        if (!patched) throw PatchException("Это не Unity-игра: нет assets/bin/Data/boot.config")
     }
 
     /** Extra field that pads a STORED entry so its data starts at a multiple of [align]. */

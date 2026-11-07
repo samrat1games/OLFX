@@ -423,9 +423,10 @@ public final class OlfxHands {
         float wu, wv;       // wrist position in the image (0..1), for matching
         float chirality;    // -1 = left, +1 = right: smoothed model label
         int slot = -1;      // 0 = left output, 1 = right output
-        final OneEuro3 root = new OneEuro3(new float[] {1.6f, 1.6f, 0.7f}, 3.0f);
+        final OneEuro3 root = new OneEuro3(new float[] {1.0f, 1.0f, 0.5f}, 3.0f);
         final OneEuro3[] dir = new OneEuro3[BONES.length];
         final float[] len = new float[BONES.length];
+        final float[][] prevDir = new float[BONES.length][]; // last output bone directions (resting deadband)
         boolean hasLen;
         long lastFilterNs;
         float[] lastRoot;   // last accepted wrist position (head space)
@@ -433,7 +434,7 @@ public final class OlfxHands {
 
         Track() {
             for (int i = 0; i < dir.length; i++) {
-                dir[i] = new OneEuro3(5.0f, 10.0f);
+                dir[i] = new OneEuro3(1.2f, 4.0f);
             }
         }
 
@@ -443,6 +444,7 @@ public final class OlfxHands {
                 f.reset();
             }
             hasLen = false;
+            java.util.Arrays.fill(prevDir, null);
             lastFilterNs = 0;
             lastRoot = null;
             rejected = 0;
@@ -808,6 +810,12 @@ public final class OlfxHands {
                 tr.len[b] += 0.04f * (length - tr.len[b]); // bones do not change length: learn it slowly
             }
             float[] fd = normalize(tr.dir[b].filter(d, dt));
+            // Resting deadband: a still finger must not creep around with the model's noise (changes under ~1 degree).
+            if (tr.prevDir[b] != null && dot(fd, tr.prevDir[b]) > 0.99985f) {
+                fd = tr.prevDir[b];
+            } else {
+                tr.prevDir[b] = fd;
+            }
             q[ch] = new float[] {
                 q[pa][0] + fd[0] * tr.len[b], q[pa][1] + fd[1] * tr.len[b], q[pa][2] + fd[2] * tr.len[b]
             };

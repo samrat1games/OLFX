@@ -69,7 +69,7 @@ class DetailActivity : AppCompatActivity() {
         // Extras
         favBtn = button("", false) { prefs.toggleFav(e.pkg); updateButtons() }
         rtBtn = button("", false) { pickRuntime() }
-        patchBtn = button("", false) { pickPatch() }
+        patchBtn = button("", false) { chooseApkMode() }
         col.addView(patchBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(rtBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(favBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
@@ -102,7 +102,7 @@ class DetailActivity : AppCompatActivity() {
         val name = if (rt == "auto") "Auto" else Runtimes.list(this).firstOrNull { it.pkg == rt }?.label ?: rt
         rtBtn.text = "OpenXR runtime: $name"
         val apk = ApkPatch.marker(this, entry.pkg)
-        patchBtn.text = if (apk != null) "Патч APK: ${Profiles.title(apk)}" else "Патч: ${Profiles.title(prefs.profile(entry.pkg))}"
+        patchBtn.text = if (apk != null) "Патч для VR применён (${Profiles.title(apk)}). Перепатчить" else "Патч для VR (против 2D и вылета)"
     }
 
     /** APK patch marker wins; otherwise the profile chosen in OLFX. */
@@ -115,9 +115,11 @@ class DetailActivity : AppCompatActivity() {
         if (effectiveProfile() == Profiles.NONE) {
             AlertDialog.Builder(this)
                 .setTitle("Игра не пропатчена")
-                .setMessage("Без патча игра может сильно грузить память и лагать. Точно хотите запустить?")
-                .setPositiveButton("Да") { _, _ -> launchGame() }
-                .setNegativeButton("Нет", null)
+                .setMessage("Без патча игра не увидит VR-рантайм: будет обычный 2D-экран или вылет. Пропатчить сейчас? " +
+                    "(Игру придётся переустановить, сохранения внутри игры пропадут.)")
+                .setPositiveButton("Пропатчить") { _, _ -> chooseApkMode() }
+                .setNeutralButton("Всё равно запустить") { _, _ -> launchGame() }
+                .setNegativeButton("Отмена", null)
                 .show()
         } else {
             launchGame()
