@@ -70,7 +70,6 @@ class DetailActivity : AppCompatActivity() {
         rtBtn = button("", false) { pickRuntime() }
         patchBtn = button("", false) { pickPatch() }
         col.addView(patchBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
-        col.addView(button("Модифицировать APK", false) { chooseApkMode() }, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(rtBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
         col.addView(favBtn, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(10) })
 

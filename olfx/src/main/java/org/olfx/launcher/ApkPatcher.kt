@@ -97,13 +97,21 @@ object ApkPatcher {
             throw PatchException("Игра не установлена")
         }
         if (!ai.splitSourceDirs.isNullOrEmpty()) throw PatchException("Игра из нескольких APK (split) — пока не поддерживается")
-        val minSdk = ai.minSdkVersion.coerceAtLeast(21)
-        val src = File(ai.sourceDir)
+        return patchFile(ctx, File(ai.sourceDir), pkg, ai.minSdkVersion, mode, progress)
+    }
+
+    /** Patches an arbitrary APK file (the original is never touched; the result goes to [outFile]). */
+    fun patchFile(ctx: Context, src: File, pkg: String, minSdkVersion: Int, mode: String, progress: (String) -> Unit): File {
+        val minSdk = minSdkVersion.coerceAtLeast(21)
         val out = outFile(ctx, pkg)
         val unsigned = File(out.parentFile, "$pkg.unsigned.apk")
 
-        progress("Копирование и правка APK…")
-        rewrite(src, unsigned, mode)
+        progress("Правка APK…")
+        try {
+            rewrite(src, unsigned, mode)
+        } catch (e: PatchException) {
+            unsigned.delete(); throw e
+        }
 
         progress("Подпись…")
         try {

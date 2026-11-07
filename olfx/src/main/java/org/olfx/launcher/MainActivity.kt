@@ -38,6 +38,12 @@ class MainActivity : AppCompatActivity() {
             text = "OLFX"; textSize = 28f; typeface = Typeface.DEFAULT_BOLD; setTextColor(C.TEXT)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(TextView(this).apply {
+            text = "+"; textSize = 26f; setTextColor(C.TEXT); typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = round(C.ACCENT, dp(20).toFloat())
+            setOnClickListener { pickApk() }
+        }, LinearLayout.LayoutParams(dp(40), dp(40)).also { it.rightMargin = dp(8) })
+        header.addView(TextView(this).apply {
             text = "Запись"; textSize = 14f; setTextColor(C.ACCENT); typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(12), dp(8), dp(12), dp(8))
             setOnClickListener { toggleRecordMenu() }
@@ -96,6 +102,104 @@ class MainActivity : AppCompatActivity() {
         }
         startForegroundService(Intent(this, MenuService::class.java))
         android.widget.Toast.makeText(this, "Меню записи включено: ‹› слева на экране", android.widget.Toast.LENGTH_LONG).show()
+    }
+
+    // ---- "+" : pick an APK -> patch it -> install (uninstalling a differently signed original only if needed) ----
+
+    private val reqPick = 31
+    private val reqUninstall = 32
+    private var readyApk: java.io.File? = null
+    private var readyPkg: String? = null
+
+    private fun pickApk() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+            .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/vnd.android.package-archive", "application/octet-stream"))
+        @Suppress("DEPRECATION")
+        startActivityForResult(i, reqPick)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == reqPick && resultCode == RESULT_OK) {
+            data?.data?.let { onApkPicked(it) }
+        } else if (requestCode == reqUninstall) {
+            val apk = readyApk
+            if (apk != null && readyPkg?.let { !isInstalled(it) } == true) install(apk)
+            else android.widget.Toast.makeText(this, "Оригинал не удалён — установка отменена, APK сохранён: ${apk?.name}", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun isInstalled(pkg: String) = try { packageManager.getPackageInfo(pkg, 0); true } catch (e: Exception) { false }
+
+    private fun onApkPicked(uri: android.net.Uri) {
+        val dlg = androidx.appcompat.app.AlertDialog.Builder(this).setTitle("APK").setMessage("Чтение файла…").setCancelable(false).show()
+        Thread {
+            try {
+                val tmp = java.io.File(cacheDir, "picked.apk")
+                contentResolver.openInputStream(uri)!!.use { i -> tmp.outputStream().use { o -> i.copyTo(o, 1 shl 16) } }
+                val info = packageManager.getPackageArchiveInfo(tmp.absolutePath, 0)
+                    ?: throw ApkPatcher.PatchException("Это не APK (для .apks / .xapk / .apkm пока нет поддержки)")
+                info.applicationInfo?.sourceDir = tmp.absolutePath
+                val pkg = info.packageName
+                val label = info.applicationInfo?.let { packageManager.getApplicationLabel(it).toString() } ?: pkg
+                val minSdk = info.applicationInfo?.minSdkVersion ?: 21
+                runOnUiThread { dlg.dismiss(); chooseMode(tmp, pkg, label, minSdk) }
+            } catch (e: Exception) {
+                runOnUiThread { dlg.dismiss(); fail(e) }
+            }
+        }.start()
+    }
+
+    private fun chooseMode(src: java.io.File, pkg: String, label: String, minSdk: Int) {
+        val modes = listOf(Profiles.OPT, Profiles.IMMERSIVE)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Патч: $label")
+            .setItems(arrayOf("Оптимизация — меньше памяти и нагрузки", "Нормальное погружение — ближе к оригиналу")) { _, i ->
+                runPatch(src, pkg, minSdk, modes[i])
+            }
+            .setNegativeButton("Отмена") { _, _ -> src.delete() }
+            .setOnCancelListener { src.delete() }
+            .show()
+    }
+
+    private fun runPatch(src: java.io.File, pkg: String, minSdk: Int, mode: String) {
+        val dlg = androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Патч APK").setMessage("Подготовка…").setCancelable(false).show()
+        Thread {
+            try {
+                val out = ApkPatcher.patchFile(this, src, pkg, minSdk, mode) { m -> runOnUiThread { dlg.setMessage(m) } }
+                src.delete()
+                runOnUiThread { dlg.dismiss(); afterPatched(out, pkg) }
+            } catch (e: Exception) {
+                src.delete()
+                runOnUiThread { dlg.dismiss(); fail(e) }
+            }
+        }.start()
+    }
+
+    /** The patched APK is already built and verified at this point; only now is the original (if any) touched. */
+    private fun afterPatched(apk: java.io.File, pkg: String) {
+        readyApk = apk; readyPkg = pkg
+        if (!isInstalled(pkg)) { install(apk); return }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Патч готов")
+            .setMessage("Патч создан и лежит в ${apk.name}. Игра уже стоит с другой подписью, поэтому оригинал нужно удалить " +
+                "(сохранения внутри игры и OBB-файлы пропадут). Удалить оригинал и установить патч?")
+            .setPositiveButton("Да, заменить") { _, _ ->
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent(Intent.ACTION_DELETE, android.net.Uri.parse("package:$pkg")).putExtra(Intent.EXTRA_RETURN_RESULT, true), reqUninstall)
+            }
+            .setNegativeButton("Не сейчас", null)
+            .show()
+    }
+
+    private fun install(apk: java.io.File) {
+        try { Installer.install(this, apk) } catch (e: Exception) { fail(e) }
+    }
+
+    private fun fail(e: Exception) {
+        androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Не удалось").setMessage(e.message ?: e.toString()).setPositiveButton("Ок", null).show()
     }
 
     override fun onResume() {
