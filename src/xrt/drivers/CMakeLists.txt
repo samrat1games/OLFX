@@ -510,6 +510,7 @@ if(XRT_BUILD_DRIVER_ANDROID)
 	add_library(
 		drv_android STATIC android/android_prober.c android/android_prober.h
 				   android/android_sensors.c android/android_sensors.h
+				   android/olfx_hands.c android/olfx_hands.h
 		)
 	target_link_libraries(
 		drv_android
@@ -518,6 +519,7 @@ if(XRT_BUILD_DRIVER_ANDROID)
 			aux_util
 			aux_os
 			aux_android
+			aux_math
 			${ANDROID_LIBRARY}
 		)
 	target_link_libraries(drv_android PRIVATE xrt-external-cardboard)

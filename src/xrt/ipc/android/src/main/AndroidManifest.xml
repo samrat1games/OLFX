@@ -4,12 +4,21 @@
         SPDX-License-Identifier: BSL-1.0
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- OLFX: camera based hand tracking -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application>
+        <activity
+            android:name="org.freedesktop.monado.ipc.CameraPermissionActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <service
             android:name="org.freedesktop.monado.ipc.MonadoService"
             android:enabled="true"
             android:exported="true"
-            android:foregroundServiceType="connectedDevice|mediaPlayback">
+            android:foregroundServiceType="connectedDevice|mediaPlayback|camera">
 
             <intent-filter>
                 <action android:name="${serviceActionName}" />

@@ -19,6 +19,7 @@
 
 #include "android_prober.h"
 #include "android_sensors.h"
+#include "olfx_hands.h"
 
 
 
@@ -71,7 +72,14 @@ android_prober_autoprobe(struct xrt_auto_prober *xap,
 {
 	struct android_device *dd = android_device_create();
 	out_xdevs[0] = &dd->base;
-	return 1;
+
+	// Camera based hand tracking (joints come from the Java side), attached to the headset pose.
+	struct xrt_device *hands = olfx_hands_device_create(&dd->base);
+	if (hands == NULL) {
+		return 1;
+	}
+	out_xdevs[1] = hands;
+	return 2;
 }
 
 

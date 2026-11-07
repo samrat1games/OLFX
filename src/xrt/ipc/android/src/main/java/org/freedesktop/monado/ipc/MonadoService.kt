@@ -55,6 +55,7 @@ class MonadoService : Service(), Watchdog.ShutdownListener {
         super.onDestroy()
         Log.d(TAG, "onDestroy")
 
+        OlfxHands.stop()
         binder.shutdown()
         watchdog.stopMonitor()
     }
@@ -102,6 +103,9 @@ class MonadoService : Service(), Watchdog.ShutdownListener {
         } else {
             startForeground(serviceNotification.getNotificationId(), notification)
         }
+
+        // OLFX: camera hand tracking (needs the foreground state above; no-op without camera permission)
+        OlfxHands.start(this)
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
