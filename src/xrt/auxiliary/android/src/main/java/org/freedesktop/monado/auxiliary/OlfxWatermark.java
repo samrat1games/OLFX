@@ -47,11 +47,17 @@ public final class OlfxWatermark {
             float lens = 0.06f;
             float leftX = (screenMeters / 2f - lens / 2f) / screenMeters * w;
             float rightX = (screenMeters / 2f + lens / 2f) / screenMeters * w;
+            // small mark near the top and a bigger one near the bottom, once per eye
             paint.setTextSize(h * 0.04f);
             float tw = paint.measureText(TEXT);
             float y = h * 0.16f;
             canvas.drawText(TEXT, leftX - tw / 2f, y, paint);
             canvas.drawText(TEXT, rightX - tw / 2f, y, paint);
+            paint.setTextSize(h * 0.085f);
+            tw = paint.measureText(TEXT);
+            float yb = h * 0.86f;
+            canvas.drawText(TEXT, leftX - tw / 2f, yb, paint);
+            canvas.drawText(TEXT, rightX - tw / 2f, yb, paint);
         }
     }
 }
