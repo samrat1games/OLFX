@@ -11,8 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"
+      - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1"
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew :src:xrt:targets:openxr_android:assembleOutOfProcessDebug --no-daemon
         env:

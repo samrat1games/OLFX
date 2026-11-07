@@ -11,5 +11,7 @@ targets:
         CFBundleDisplayName: OLFX
         NSCameraUsageDescription: OLFX uses the camera for hand tracking and 6DoF head tracking.
         UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortrait]
     settings: { PRODUCT_BUNDLE_IDENTIFIER: org.olfx.launcher, SWIFT_VERSION: "5.0" }

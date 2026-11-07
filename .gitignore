@@ -123,3 +123,4 @@ local.properties
 build/
 .idea/
 patch_backup/
+ipa_out/
