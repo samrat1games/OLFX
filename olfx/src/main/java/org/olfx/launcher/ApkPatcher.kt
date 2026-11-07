@@ -32,6 +32,16 @@ object ApkPatcher {
 
     class PatchException(msg: String) : Exception(msg)
 
+    private val QUERY_PACKAGES = listOf(
+        "org.olfx.launcher",
+        "org.freedesktop.monado.openxr_runtime.out_of_process",
+        // NOT com.oculus.systemdriver: Meta's loader would then prefer that package over the OpenXR broker
+    )
+    private val QUERY_ACTIONS = listOf(
+        "org.khronos.openxr.OpenXRRuntimeService",
+        "org.khronos.openxr.OpenXRApiLayerService",
+    )
+
     /** boot.config overrides per mode. All of these are options the Unity player reads from boot.config. */
     private fun overrides(mode: String): LinkedHashMap<String, String> {
         val m = LinkedHashMap<String, String>()
@@ -107,8 +117,9 @@ object ApkPatcher {
         val unsigned = File(out.parentFile, "$pkg.unsigned.apk")
 
         progress("Правка APK…")
+        val khronos = try { ctx.assets.open("khronos/libopenxr_loader_arm64.so").use { it.readBytes() } } catch (e: Exception) { null }
         try {
-            rewrite(src, unsigned, mode)
+            rewrite(src, unsigned, mode, khronos)
         } catch (e: PatchException) {
             unsigned.delete(); throw e
         }
@@ -128,7 +139,7 @@ object ApkPatcher {
         override fun write(b: ByteArray, off: Int, len: Int) { out.write(b, off, len); count += len }
     }
 
-    private fun rewrite(src: File, dst: File, mode: String) {
+    private fun rewrite(src: File, dst: File, mode: String, khronosLoader: ByteArray?) {
         var patched = false
         ZipFile(src).use { zin ->
             val names = zin.entries().asSequence().map { it.name }.toSet()
@@ -147,6 +158,18 @@ object ApkPatcher {
                         if (isBoot) {
                             data = patchBootConfig(zin.getInputStream(e).readBytes(), mode)
                             patched = true
+                        } else if (n == "lib/arm64-v8a/libopenxr_loader.so" && khronosLoader != null) {
+                            // Meta's loader only knows com.oculus.systemdriver (Quest). Swap in the standard Khronos
+                            // loader, which finds the runtime through the broker (OLFX -> Monado).
+                            val orig = zin.getInputStream(e).readBytes()
+                            if (String(orig, Charsets.ISO_8859_1).contains("com.oculus.systemdriver")) data = khronosLoader
+                        } else if (n == "AndroidManifest.xml") {
+                            // let the game's OpenXR loader see OLFX (runtime broker) and the runtimes
+                            data = try {
+                                ManifestEditor.addQueries(zin.getInputStream(e).readBytes(), QUERY_PACKAGES, QUERY_ACTIONS)
+                            } catch (x: ManifestEditor.ManifestException) {
+                                throw PatchException("Манифест: ${x.message}")
+                            }
                         }
                         val stored = e.method == ZipEntry.STORED
                         val ne = ZipEntry(n)
