@@ -1,91 +1,249 @@
 package org.olfx.launcher
 
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
-import android.widget.EditText
-import android.widget.HorizontalScrollView
-import android.widget.ImageView
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+import com.google.android.material.imageview.ShapeableImageView
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.shape.ShapeAppearanceModel
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 
+/** Material 3 launcher: bottom bar with Games / Favorite / Hand Tracking. */
 class MainActivity : AppCompatActivity() {
+    private val monadoPkg = "org.freedesktop.monado.openxr_runtime.out_of_process"
+
     private var all: List<AppEntry> = emptyList()
-    private var filter = "all"
+    private var tab = TAB_GAMES
     private var query = ""
     private lateinit var prefs: Prefs
     private val adapter = Adapter()
-    private val chips = LinkedHashMap<String, TextView>()
+
+    private lateinit var title: TextView
+    private lateinit var subtitle: TextView
+    private lateinit var gamesPage: View
+    private lateinit var handsPage: View
+    private lateinit var fab: ExtendedFloatingActionButton
+    private lateinit var permStatus: TextView
+    private lateinit var permButton: MaterialButton
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        C.init(this)
         prefs = Prefs(this)
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.BG) }
-
-        val header = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), dp(16), dp(12), dp(4))
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(C.BG)
+            fitsSystemWindows = true
         }
-        header.addView(TextView(this).apply {
-            text = "OLFX"; textSize = 28f; typeface = Typeface.DEFAULT_BOLD; setTextColor(C.TEXT)
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        header.addView(TextView(this).apply {
-            text = "+"; textSize = 26f; setTextColor(C.TEXT); typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            background = round(C.ACCENT, dp(20).toFloat())
-            setOnClickListener { pickApk() }
-        }, LinearLayout.LayoutParams(dp(40), dp(40)).also { it.rightMargin = dp(8) })
-        header.addView(TextView(this).apply {
-            text = "Запись"; textSize = 14f; setTextColor(C.ACCENT); typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setOnClickListener { toggleRecordMenu() }
-        })
-        header.addView(TextView(this).apply {
-            text = "Runtimes"; textSize = 14f; setTextColor(C.ACCENT); typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setOnClickListener { startActivity(Intent(this@MainActivity, RuntimeActivity::class.java)) }
-        })
-        root.addView(header)
+        val content = FrameLayout(this)
+        root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        root.addView(EditText(this).apply {
-            hint = "Search"; setHintTextColor(C.MUTED); setTextColor(C.TEXT); textSize = 16f
-            setSingleLine(); setPadding(dp(16), dp(10), dp(16), dp(10))
-            background = round(C.SURFACE, dp(12).toFloat())
+        gamesPage = buildGamesPage()
+        handsPage = buildHandsPage().also { it.visibility = View.GONE }
+        content.addView(gamesPage, FrameLayout.LayoutParams(-1, -1))
+        content.addView(handsPage, FrameLayout.LayoutParams(-1, -1))
+
+        fab = ExtendedFloatingActionButton(this).apply {
+            text = "Add APK"
+            icon = getDrawable(R.drawable.ic_add)
+            setOnClickListener { pickApk() }
+        }
+        content.addView(fab, FrameLayout.LayoutParams(-2, -2).also {
+            it.gravity = Gravity.BOTTOM or Gravity.END
+            it.setMargins(0, 0, dp(16), dp(16))
+        })
+
+        val nav = BottomNavigationView(this).apply {
+            menu.add(0, TAB_GAMES, 0, "Games").setIcon(R.drawable.ic_games)
+            menu.add(0, TAB_FAVORITE, 1, "Favorite").setIcon(R.drawable.ic_favorite)
+            menu.add(0, TAB_HANDS, 2, "Hand Tracking").setIcon(R.drawable.ic_hand)
+            setOnItemSelectedListener { selectTab(it.itemId); true }
+        }
+        root.addView(nav, LinearLayout.LayoutParams(-1, -2))
+        setContentView(root)
+        selectTab(TAB_GAMES)
+    }
+
+    // ---- pages ----------------------------------------------------------------------------------------------------
+
+    private fun headerTitle(sub: Boolean): TextView = TextView(this).apply {
+        setTextColor(if (sub) C.MUTED else C.TEXT)
+        textSize = if (sub) 15f else 34f
+        if (!sub) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    }
+
+    private fun buildGamesPage(): View {
+        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val head = LinearLayout(this).apply {
+            gravity = Gravity.BOTTOM
+            setPadding(dp(24), dp(24), dp(12), dp(8))
+        }
+        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        title = headerTitle(false)
+        subtitle = headerTitle(true)
+        titles.addView(title)
+        titles.addView(subtitle)
+        head.addView(titles, LinearLayout.LayoutParams(0, -2, 1f))
+        fun textButton(t: String, onClick: () -> Unit) = MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+            text = t
+            setOnClickListener { onClick() }
+        }
+        head.addView(textButton("Запись") { toggleRecordMenu() })
+        head.addView(textButton("Runtimes") { startActivity(Intent(this, RuntimeActivity::class.java)) })
+        page.addView(head)
+
+        val search = TextInputLayout(this, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
+            hint = "Search"
+            endIconMode = TextInputLayout.END_ICON_CLEAR_TEXT
+            setBoxCornerRadii(dp(28).toFloat(), dp(28).toFloat(), dp(28).toFloat(), dp(28).toFloat())
+        }
+        val edit = TextInputEditText(search.context).apply {
+            setSingleLine()
             addTextChangedListener(object : TextWatcher {
                 override fun afterTextChanged(s: Editable?) { query = s.toString(); refilter() }
                 override fun beforeTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
                 override fun onTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
             })
-        }, LinearLayout.LayoutParams(-1, -2).also { it.setMargins(dp(16), dp(8), dp(16), dp(8)) })
-
-        val chipRow = LinearLayout(this).apply { setPadding(dp(12), 0, dp(12), dp(8)) }
-        listOf("all" to "All", "fav" to "★ Favourites", "xr" to "OpenXR", "quest" to "Meta Quest", "pico" to "Pico")
-            .forEach { (k, t) ->
-                val tv = TextView(this).apply {
-                    text = t; textSize = 14f; setPadding(dp(14), dp(7), dp(14), dp(7))
-                    setOnClickListener { filter = k; refilter() }
-                }
-                chips[k] = tv
-                chipRow.addView(tv, LinearLayout.LayoutParams(-2, -2).also { it.setMargins(dp(4), 0, dp(4), 0) })
-            }
-        root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chipRow) })
+        }
+        search.addView(edit)
+        page.addView(search, LinearLayout.LayoutParams(-1, -2).also { it.setMargins(dp(16), dp(8), dp(16), dp(8)) })
 
         val rv = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
             clipToPadding = false
-            setPadding(dp(12), dp(4), dp(12), dp(16))
+            setPadding(dp(16), dp(4), dp(16), dp(96))
         }
-        root.addView(rv, LinearLayout.LayoutParams(-1, 0, 1f))
-        setContentView(root)
+        page.addView(rv, LinearLayout.LayoutParams(-1, 0, 1f))
+        return page
+    }
+
+    private fun card(bg: Int, build: LinearLayout.() -> Unit): MaterialCardView {
+        val c = MaterialCardView(this).apply {
+            setCardBackgroundColor(bg)
+            radius = dp(28).toFloat()
+            cardElevation = 0f
+            strokeWidth = 0
+        }
+        val inner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+            build()
+        }
+        c.addView(inner, ViewGroup.LayoutParams(-1, -2))
+        return c
+    }
+
+    private fun label(t: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
+        text = t
+        textSize = size
+        setTextColor(color)
+        if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    }
+
+    private fun switchRow(titleText: String, sub: String, color: Int, onColor: Int, checked: Boolean, onChange: (Boolean) -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            val col = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(label(titleText, 18f, onColor, true))
+            col.addView(label(sub, 14f, color))
+            addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(MaterialSwitch(this@MainActivity).apply {
+                isChecked = checked
+                setOnCheckedChangeListener { _, v -> onChange(v) }
+            })
+        }
+
+    private fun buildHandsPage(): View {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(24), dp(16), dp(24))
+        }
+        col.addView(headerTitle(false).apply { text = "Hand Tracking"; setPadding(dp(8), 0, 0, 0) })
+        col.addView(headerTitle(true).apply { text = "Use your own hands in VR games"; setPadding(dp(8), 0, 0, dp(16)) })
+
+        fun gap() = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = dp(12) }
+
+        col.addView(card(C.SEC_CONTAINER) {
+            addView(switchRow("Hand tracking", "Rear camera, no controllers needed", C.ON_SEC_CONTAINER, C.ON_SEC_CONTAINER, prefs.handEnabled) { prefs.handEnabled = it })
+        }, gap())
+
+        col.addView(card(C.SURFACE) {
+            addView(label("Camera access for Monado", 18f, C.TEXT, true))
+            permStatus = label("", 14f, C.MUTED)
+            addView(permStatus, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(4) })
+            permButton = MaterialButton(this@MainActivity).apply {
+                text = "Allow camera"
+                setOnClickListener { requestCamera() }
+            }
+            addView(permButton, LinearLayout.LayoutParams(-2, -2).also { it.topMargin = dp(12) })
+        }, gap())
+
+        col.addView(card(C.SURFACE) {
+            addView(switchRow("Swap left and right", "Turn on if your left hand shows up as the right one", C.MUTED, C.TEXT, prefs.handSwap) { prefs.handSwap = it })
+        }, gap())
+
+        col.addView(card(C.TER_CONTAINER) {
+            addView(label("Tips", 18f, C.ON_TER_CONTAINER, true))
+            addView(label(
+                "Put the phone in the headset and hold your hands in front of the rear camera, 30 to 60 cm away, in good light. " +
+                    "An open palm is picked up fastest. Restart the game after changing a setting.",
+                14f, C.ON_TER_CONTAINER,
+            ), LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(4) })
+        }, gap())
+
+        return ScrollView(this).apply { addView(col) }
+    }
+
+    private fun refreshHandStatus() {
+        val installed = try { packageManager.getPackageInfo(monadoPkg, 0); true } catch (e: Exception) { false }
+        if (!installed) {
+            permStatus.text = "Monado is not installed"
+            permButton.visibility = View.GONE
+            return
+        }
+        val granted = packageManager.checkPermission(android.Manifest.permission.CAMERA, monadoPkg) == PackageManager.PERMISSION_GRANTED
+        permStatus.text = if (granted) "Allowed. Hands work in games that ask for hand tracking." else "Not allowed yet: games will not see your hands."
+        permButton.visibility = if (granted) View.GONE else View.VISIBLE
+    }
+
+    private fun requestCamera() {
+        try {
+            startActivity(Intent().setClassName(monadoPkg, "org.freedesktop.monado.ipc.CameraPermissionActivity"))
+        } catch (e: Exception) {
+            startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$monadoPkg")))
+        }
+    }
+
+    private fun selectTab(t: Int) {
+        tab = t
+        val hands = t == TAB_HANDS
+        gamesPage.visibility = if (hands) View.GONE else View.VISIBLE
+        handsPage.visibility = if (hands) View.VISIBLE else View.GONE
+        if (hands) fab.hide() else fab.show()
+        title.text = if (t == TAB_FAVORITE) "Favorite" else "Games"
+        if (hands) refreshHandStatus()
         refilter()
     }
 
@@ -221,6 +379,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (tab == TAB_HANDS) refreshHandStatus()
         Thread {
             val apps = AppScanner.scan(this)
             runOnUiThread { all = apps; refilter() }
@@ -228,22 +387,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refilter() {
-        chips.forEach { (k, tv) ->
-            val on = k == filter
-            tv.setTextColor(if (on) C.TEXT else C.MUTED)
-            tv.background = round(if (on) C.ACCENT else C.SURFACE, dp(18).toFloat())
-        }
         val favs = prefs.favs()
         val list = all.filter {
             (query.isBlank() || it.label.contains(query, true) || it.pkg.contains(query, true)) &&
-                when (filter) {
-                    "fav" -> it.pkg in favs
-                    "xr" -> it.openXr
-                    "quest" -> it.quest
-                    "pico" -> it.pico
-                    else -> true
-                }
+                (tab != TAB_FAVORITE || it.pkg in favs)
         }.sortedWith(compareByDescending<AppEntry> { it.pkg in favs }.thenBy { it.label.lowercase() })
+        subtitle.text = "${list.size} " + if (tab == TAB_FAVORITE) "favorites" else "apps"
         adapter.submit(list)
     }
 
@@ -253,27 +402,37 @@ class MainActivity : AppCompatActivity() {
         override fun getItemCount() = items.size
 
         override fun onCreateViewHolder(p: ViewGroup, t: Int): RecyclerView.ViewHolder {
-            val row = LinearLayout(p.context).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = round(C.SURFACE, dp(16).toFloat())
+            val card = MaterialCardView(p.context).apply {
+                setCardBackgroundColor(C.SURFACE)
+                radius = dp(28).toFloat()
+                cardElevation = 0f
+                strokeWidth = 0
                 layoutParams = RecyclerView.LayoutParams(-1, -2).also { it.setMargins(0, dp(5), 0, dp(5)) }
             }
-            row.addView(ImageView(p.context).apply { id = 1 }, LinearLayout.LayoutParams(dp(56), dp(56)))
+            val row = LinearLayout(p.context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+            }
+            row.addView(ShapeableImageView(p.context).apply {
+                id = 1
+                shapeAppearanceModel = ShapeAppearanceModel.builder().setAllCornerSizes(dp(16).toFloat()).build()
+            }, LinearLayout.LayoutParams(dp(56), dp(56)))
             val col = LinearLayout(p.context).apply { orientation = LinearLayout.VERTICAL }
             col.addView(TextView(p.context).apply {
-                id = 2; textSize = 18f; setTextColor(C.TEXT); typeface = Typeface.DEFAULT_BOLD; setSingleLine()
+                id = 2; textSize = 18f; setTextColor(C.TEXT); setSingleLine()
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             })
             col.addView(LinearLayout(p.context).apply { id = 3 })
-            row.addView(col, LinearLayout.LayoutParams(0, -2, 1f).also { it.leftMargin = dp(14) })
-            row.addView(TextView(p.context).apply { id = 4; textSize = 22f; setTextColor(0xFFFFC857.toInt()) })
-            return object : RecyclerView.ViewHolder(row) {}
+            row.addView(col, LinearLayout.LayoutParams(0, -2, 1f).also { it.leftMargin = dp(16) })
+            row.addView(TextView(p.context).apply { id = 4; textSize = 22f; setTextColor(C.ACCENT) })
+            card.addView(row)
+            return object : RecyclerView.ViewHolder(card) {}
         }
 
         override fun onBindViewHolder(h: RecyclerView.ViewHolder, i: Int) {
             val e = items[i]
             val v = h.itemView
-            v.findViewById<ImageView>(1).setImageDrawable(e.icon)
+            v.findViewById<android.widget.ImageView>(1).setImageDrawable(e.icon)
             v.findViewById<TextView>(2).text = e.label
             v.findViewById<LinearLayout>(3).apply {
                 removeAllViews()
@@ -286,5 +445,11 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, DetailActivity::class.java).putExtra("pkg", e.pkg))
             }
         }
+    }
+
+    private companion object {
+        const val TAB_GAMES = 0
+        const val TAB_FAVORITE = 1
+        const val TAB_HANDS = 2
     }
 }

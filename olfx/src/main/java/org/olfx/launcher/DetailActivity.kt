@@ -33,6 +33,7 @@ class DetailActivity : AppCompatActivity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        C.init(this)
         prefs = Prefs(this)
         val pkg = intent.getStringExtra("pkg") ?: return finish()
         entry = AppScanner.entry(this, pkg, false) ?: return finish()

@@ -78,7 +78,7 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlinVersion"
 
     // OLFX: camera hand tracking (hand landmark model)
-    implementation "com.google.mediapipe:tasks-vision:0.10.21"
+    implementation "com.google.mediapipe:tasks-vision:0.10.32"
 
     // for Hilt dependency injection
     api "com.google.dagger:hilt-android:$hiltVersion"

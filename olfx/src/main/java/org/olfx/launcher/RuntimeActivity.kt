@@ -14,6 +14,7 @@ class RuntimeActivity : AppCompatActivity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        C.init(this)
         prefs = Prefs(this)
         col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(20), dp(20), dp(20)) }
         setContentView(ScrollView(this).apply { setBackgroundColor(C.BG); addView(col) })

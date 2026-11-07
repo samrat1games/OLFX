@@ -105,6 +105,16 @@ class Prefs(ctx: Context) {
         get() = sp.getInt("current_scale", 100)
         set(v) = sp.edit().putInt("current_scale", v).apply()
 
+    /** Camera hand tracking on/off (read by the Monado service through the broker provider). */
+    var handEnabled: Boolean
+        get() = sp.getBoolean("hand_enabled", true)
+        set(v) = sp.edit().putBoolean("hand_enabled", v).apply()
+
+    /** Swap left/right hands (if the model's handedness comes out mirrored on some camera). */
+    var handSwap: Boolean
+        get() = sp.getBoolean("hand_swap", false)
+        set(v) = sp.edit().putBoolean("hand_swap", v).apply()
+
     fun appRuntime(pkg: String): String = sp.getString("rt_app_$pkg", "auto") ?: "auto"
     fun setAppRuntime(pkg: String, rt: String) = sp.edit().putString("rt_app_$pkg", rt).apply()
 }

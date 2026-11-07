@@ -202,7 +202,8 @@ android {
                 arguments "-DEigen3_DIR=${project.eigenCMakeDir}",
                     "-DANDROID_PLATFORM=${project.sharedMinSdk}",
                     "-DANDROID_STL=${project.stl}",
-                    "-DANDROID_ARM_NEON=TRUE"
+                    "-DANDROID_ARM_NEON=TRUE",
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
 
             }
             if (project.pythonBinary != null) {

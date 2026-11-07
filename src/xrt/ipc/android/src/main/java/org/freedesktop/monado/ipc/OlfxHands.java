@@ -67,6 +67,12 @@ public final class OlfxHands {
     private CameraCaptureSession session;
     private ImageReader reader;
     private HandLandmarker landmarker;
+    private HandLandmarker cpuLandmarker;
+    private HandLandmarker gpuLandmarker;
+    private int benchPhase = 0; // 0 = measuring CPU, 1 = measuring GPU, 2 = done
+    private long benchFrames = 0;
+    private long benchNs = 0;
+    private long benchCpuNs = 0;
     private float focalPx = 500f; // focal length in pixels of the raw frame
     private int rotationCcw = 0;  // rotation (counter-clockwise, degrees) that makes the frame upright
     private int uprightW = FRAME_W;
@@ -74,6 +80,7 @@ public final class OlfxHands {
     private final int[] missing = new int[2];
     private long lastTimestampMs = 0;
     private volatile boolean running = false;
+    private boolean swap = false; // user setting: swap left/right
 
     private OlfxHands(Context ctx) {
         this.context = ctx.getApplicationContext();
@@ -94,7 +101,13 @@ public final class OlfxHands {
             }
             return;
         }
+        int[] settings = readSettings(ctx);
+        if (settings[0] == 0) {
+            Log.i(TAG, "Hand tracking is switched off in OLFX");
+            return;
+        }
         OlfxHands h = new OlfxHands(ctx);
+        h.swap = settings[1] == 1;
         try {
             h.open();
             instance = h;
@@ -102,6 +115,25 @@ public final class OlfxHands {
             Log.e(TAG, "Hand tracking failed to start", t);
             h.close();
         }
+    }
+
+    /** {enabled, swapHands} from the OLFX launcher (runtime broker provider); defaults if OLFX is unreachable. */
+    private static int[] readSettings(Context ctx) {
+        try (android.database.Cursor c =
+                ctx.getContentResolver()
+                        .query(
+                                android.net.Uri.parse("content://org.khronos.openxr.runtime_broker/olfx/hands"),
+                                null,
+                                null,
+                                null,
+                                null)) {
+            if (c != null && c.moveToFirst()) {
+                return new int[] {c.getInt(0), c.getInt(1)};
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "OLFX hand settings unavailable: " + t);
+        }
+        return new int[] {1, 0};
     }
 
     public static synchronized void stop() {
@@ -118,8 +150,9 @@ public final class OlfxHands {
         thread.start();
         handler = new Handler(thread.getLooper());
 
-        // GPU gave no speed-up on the test tablet (pre/post-processing dominates) and risks native crashes.
+        // Start on the CPU; onImage() benchmarks the GPU delegate on the first frames and keeps the faster one.
         landmarker = createLandmarker(Delegate.CPU);
+        cpuLandmarker = landmarker;
         if (landmarker == null) {
             throw new IllegalStateException("hand landmarker unavailable");
         }
@@ -236,9 +269,9 @@ public final class OlfxHands {
         int rot = d != null ? d.getRotation() * 90 : 0;
         int clockwise = (so - rot + 360) % 360;
         rotationCcw = (360 - clockwise) % 360;
-        boolean swap = clockwise == 90 || clockwise == 270;
-        uprightW = swap ? FRAME_H : FRAME_W;
-        uprightH = swap ? FRAME_W : FRAME_H;
+        boolean rotated = clockwise == 90 || clockwise == 270;
+        uprightW = rotated ? FRAME_H : FRAME_W;
+        uprightH = rotated ? FRAME_W : FRAME_H;
     }
 
     private void onImage(ImageReader r) {
@@ -257,7 +290,11 @@ public final class OlfxHands {
                     ImageProcessingOptions.builder().setRotationDegrees(rotationCcw).build();
             long t0 = System.nanoTime();
             HandLandmarkerResult result = landmarker.detectForVideo(mp, opts, ts);
-            statDetectNs += System.nanoTime() - t0;
+            long took = System.nanoTime() - t0;
+            statDetectNs += took;
+            if (benchPhase < 2) {
+                benchmark(took);
+            }
             publish(result);
             if (statFrames > 0 && statFrames % 120 == 0) {
                 Log.i(TAG, "tracking: convert " + (statConvNs / statFrames / 1_000_000L) + " ms, detect avg "
@@ -270,6 +307,40 @@ public final class OlfxHands {
             if (image != null) {
                 image.close();
             }
+        }
+    }
+
+    /** CPU vs GPU delegate: time 60 frames on each, keep the faster (GPU must be clearly faster to be chosen). */
+    private void benchmark(long tookNs) {
+        benchFrames++;
+        benchNs += tookNs;
+        if (benchFrames < 60) {
+            return;
+        }
+        long avg = benchNs / benchFrames;
+        benchFrames = 0;
+        benchNs = 0;
+        if (benchPhase == 0) {
+            benchCpuNs = avg;
+            // created here, on the thread that will use it (a GPU delegate is bound to its creating thread)
+            gpuLandmarker = createLandmarker(Delegate.GPU);
+            if (gpuLandmarker == null) {
+                benchPhase = 2;
+                Log.i(TAG, "benchmark: CPU " + avg / 1_000_000L + " ms, GPU unavailable");
+                return;
+            }
+            landmarker = gpuLandmarker;
+            benchPhase = 1;
+        } else {
+            boolean useGpu = avg < benchCpuNs * 0.8;
+            Log.i(TAG, "benchmark: CPU " + benchCpuNs / 1_000_000L + " ms, GPU " + avg / 1_000_000L + " ms -> "
+                    + (useGpu ? "GPU" : "CPU"));
+            landmarker = useGpu ? gpuLandmarker : cpuLandmarker;
+            HandLandmarker unused = useGpu ? cpuLandmarker : gpuLandmarker;
+            if (unused != null) {
+                unused.close();
+            }
+            benchPhase = 2;
         }
     }
 
@@ -476,6 +547,181 @@ public final class OlfxHands {
         return new double[] {a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]};
     }
 
+    // ---- full pose refinement ------------------------------------------------------------------------------------
+
+    private static double[][] rodrigues(double wx, double wy, double wz) {
+        double th = Math.sqrt(wx * wx + wy * wy + wz * wz);
+        if (th < 1e-12) {
+            return new double[][] {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        }
+        double x = wx / th, y = wy / th, z = wz / th;
+        double c = Math.cos(th), sn = Math.sin(th), k = 1 - c;
+        return new double[][] {
+            {c + x * x * k, x * y * k - z * sn, x * z * k + y * sn},
+            {y * x * k + z * sn, c + y * y * k, y * z * k - x * sn},
+            {z * x * k - y * sn, z * y * k + x * sn, c + z * z * k},
+        };
+    }
+
+    private static double[][] mul(double[][] a, double[][] b) {
+        double[][] r = new double[3][3];
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+            }
+        }
+        return r;
+    }
+
+    /** Residuals (px) of projecting R*w + t onto the image landmarks; fills out[42], returns the mean error. */
+    private double residuals(double[][] r, double[] t, double[][] w, double[] us, double[] vs, double[] out) {
+        double sum = 0;
+        for (int i = 0; i < 21; i++) {
+            double X = r[0][0] * w[i][0] + r[0][1] * w[i][1] + r[0][2] * w[i][2] + t[0];
+            double Y = r[1][0] * w[i][0] + r[1][1] * w[i][1] + r[1][2] * w[i][2] + t[1];
+            double Z = r[2][0] * w[i][0] + r[2][1] * w[i][1] + r[2][2] * w[i][2] + t[2];
+            if (Z < 0.02) {
+                Z = 0.02;
+            }
+            double du = focalPx * X / Z - us[i];
+            double dv = focalPx * Y / Z - vs[i];
+            out[2 * i] = du;
+            out[2 * i + 1] = dv;
+            sum += Math.sqrt(du * du + dv * dv);
+        }
+        return sum / 21.0;
+    }
+
+    /**
+     * Gauss-Newton / Levenberg-Marquardt fit of rotation + translation of the model hand to the image landmarks,
+     * starting from "no rotation + least-squares translation". Returns {tx, ty, tz, errPx, R(9)} or null.
+     */
+    private double[] solvePose(List<NormalizedLandmark> lm, List<Landmark> wl, int zSign) {
+        double[] t0 = solveTranslation(lm, wl, zSign);
+        if (t0 == null) {
+            return null;
+        }
+        double[][] w = new double[21][3];
+        double[] us = new double[21];
+        double[] vs = new double[21];
+        for (int i = 0; i < 21; i++) {
+            w[i][0] = wl.get(i).x();
+            w[i][1] = wl.get(i).y();
+            w[i][2] = zSign * wl.get(i).z();
+            us[i] = lm.get(i).x() * uprightW - uprightW / 2.0;
+            vs[i] = lm.get(i).y() * uprightH - uprightH / 2.0;
+        }
+        double[][] rot = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        double[] t = {t0[0], t0[1], t0[2]};
+        double[] res = new double[42];
+        double cost = residuals(rot, t, w, us, vs, res);
+        double lambda = 1e-2;
+
+        for (int iter = 0; iter < 8; iter++) {
+            double[][] jac = new double[42][6];
+            double[] tmp = new double[42];
+            final double eps = 1e-4;
+            for (int k = 0; k < 6; k++) {
+                double[][] rk = rot;
+                double[] tk = t.clone();
+                if (k < 3) {
+                    double[] d = new double[3];
+                    d[k] = eps;
+                    rk = mul(rodrigues(d[0], d[1], d[2]), rot);
+                } else {
+                    tk[k - 3] += eps;
+                }
+                residuals(rk, tk, w, us, vs, tmp);
+                for (int r = 0; r < 42; r++) {
+                    jac[r][k] = (tmp[r] - res[r]) / eps;
+                }
+            }
+            double[][] a = new double[6][6];
+            double[] g = new double[6];
+            for (int r = 0; r < 42; r++) {
+                for (int i = 0; i < 6; i++) {
+                    g[i] += jac[r][i] * res[r];
+                    for (int j = 0; j < 6; j++) {
+                        a[i][j] += jac[r][i] * jac[r][j];
+                    }
+                }
+            }
+            for (int i = 0; i < 6; i++) {
+                a[i][i] *= 1 + lambda;
+                a[i][i] += 1e-9;
+            }
+            double[] step = solveN(a, g);
+            if (step == null) {
+                break;
+            }
+            double[][] rn = mul(rodrigues(-step[0], -step[1], -step[2]), rot);
+            double[] tn = {t[0] - step[3], t[1] - step[4], t[2] - step[5]};
+            double[] rtmp = new double[42];
+            double c2 = residuals(rn, tn, w, us, vs, rtmp);
+            if (c2 < cost) {
+                rot = rn;
+                t = tn;
+                res = rtmp;
+                boolean done = cost - c2 < 1e-3;
+                cost = c2;
+                lambda *= 0.5;
+                if (done) {
+                    break;
+                }
+            } else {
+                lambda *= 4;
+            }
+        }
+
+        double trace = rot[0][0] + rot[1][1] + rot[2][2];
+        double angle = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, (trace - 1) / 2))));
+        if (angle > 75 || t[2] < 0.05) {
+            // Implausible: fall back to the translation-only solution (no rotation).
+            return new double[] {t0[0], t0[1], t0[2], t0[3], 1, 0, 0, 0, 1, 0, 0, 0, 1};
+        }
+        return new double[] {
+            t[0], t[1], t[2], cost,
+            rot[0][0], rot[0][1], rot[0][2], rot[1][0], rot[1][1], rot[1][2], rot[2][0], rot[2][1], rot[2][2]
+        };
+    }
+
+    /** Solves A x = b for small dense systems (Gaussian elimination with pivoting). */
+    private static double[] solveN(double[][] m, double[] b) {
+        int n = b.length;
+        double[][] a = new double[n][n + 1];
+        for (int r = 0; r < n; r++) {
+            System.arraycopy(m[r], 0, a[r], 0, n);
+            a[r][n] = b[r];
+        }
+        for (int c = 0; c < n; c++) {
+            int piv = c;
+            for (int r = c + 1; r < n; r++) {
+                if (Math.abs(a[r][c]) > Math.abs(a[piv][c])) {
+                    piv = r;
+                }
+            }
+            if (Math.abs(a[piv][c]) < 1e-12) {
+                return null;
+            }
+            double[] t = a[c];
+            a[c] = a[piv];
+            a[piv] = t;
+            for (int r = 0; r < n; r++) {
+                if (r != c) {
+                    double k = a[r][c] / a[c][c];
+                    for (int cc = c; cc <= n; cc++) {
+                        a[r][cc] -= k * a[c][cc];
+                    }
+                }
+            }
+        }
+        double[] x = new double[n];
+        for (int i = 0; i < n; i++) {
+            x[i] = a[i][n] / a[i][i];
+        }
+        return x;
+    }
+
     /**
      * Rigid, smoothed 21-point hand in head space (x right, y up, -z forward), or null if the frame is not
      * trustworthy.
@@ -486,13 +732,13 @@ public final class OlfxHands {
         if (statZPlus + statZMinus >= 30) {
             // Once enough frames have voted, stick to one axis convention: flipping it per frame bends the hand.
             zSign = statZMinus >= statZPlus ? -1 : 1;
-            t = solveTranslation(lm, wl, zSign);
+            t = solvePose(lm, wl, zSign);
             if (t == null) {
                 return null;
             }
         } else {
-            double[] plus = solveTranslation(lm, wl, +1);
-            double[] minus = solveTranslation(lm, wl, -1);
+            double[] plus = solvePose(lm, wl, +1);
+            double[] minus = solvePose(lm, wl, -1);
             if (plus != null && (minus == null || plus[3] <= minus[3])) {
                 t = plus;
                 zSign = 1;
@@ -515,12 +761,15 @@ public final class OlfxHands {
         // Raw landmark positions: the model's metric shape moved to where the image says it is.
         float[][] raw = new float[21][3];
         for (int i = 0; i < 21; i++) {
-            float x = (float) (t[0] + wl.get(i).x());
-            float y = (float) (t[1] + wl.get(i).y());
-            float z = (float) (t[2] + zSign * wl.get(i).z());
-            raw[i][0] = x;     // camera x right   -> head x right
-            raw[i][1] = -y;    // camera y down    -> head y up
-            raw[i][2] = -z;    // camera z forward -> head -z forward
+            double wx = wl.get(i).x();
+            double wy = wl.get(i).y();
+            double wz = zSign * wl.get(i).z();
+            double x = t[0] + t[4] * wx + t[5] * wy + t[6] * wz;
+            double y = t[1] + t[7] * wx + t[8] * wy + t[9] * wz;
+            double z = t[2] + t[10] * wx + t[11] * wy + t[12] * wz;
+            raw[i][0] = (float) x;     // camera x right   -> head x right
+            raw[i][1] = (float) -y;    // camera y down    -> head y up
+            raw[i][2] = (float) -z;    // camera z forward -> head -z forward
         }
 
         long now = System.nanoTime();
@@ -677,6 +926,9 @@ public final class OlfxHands {
             if (!cat.isEmpty()) {
                 // The model assumes a mirrored image; the rear camera is not mirrored, so its label is swapped.
                 float vote = "Left".equalsIgnoreCase(cat.get(0).categoryName()) ? +1f : -1f;
+                if (swap) {
+                    vote = -vote;
+                }
                 vote *= Math.min(1f, Math.max(0.2f, cat.get(0).score()));
                 t.chirality = t.slot < 0 && t.chirality == 0 ? 0.5f * vote : 0.92f * t.chirality + 0.08f * vote;
             }
@@ -696,7 +948,8 @@ public final class OlfxHands {
             }
         }
         if (a != null && b2 != null) {
-            Track left = a.wu <= b2.wu ? a : b2;
+            boolean aIsLeft = (a.wu <= b2.wu) != swap;
+            Track left = aIsLeft ? a : b2;
             Track right = left == a ? b2 : a;
             assignSlot(left, 0);
             assignSlot(right, 1);
@@ -901,6 +1154,8 @@ public final class OlfxHands {
         }
         try {
             if (landmarker != null) landmarker.close();
+            if (cpuLandmarker != null && cpuLandmarker != landmarker) cpuLandmarker.close();
+            if (gpuLandmarker != null && gpuLandmarker != landmarker) gpuLandmarker.close();
         } catch (Exception ignored) {
         }
         if (thread != null) {

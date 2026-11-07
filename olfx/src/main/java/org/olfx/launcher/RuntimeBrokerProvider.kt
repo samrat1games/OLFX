@@ -26,6 +26,13 @@ class RuntimeBrokerProvider : ContentProvider() {
             c.addRow(arrayOf<Any>(Prefs(ctx).currentScale))
             return c
         }
+        // Hand tracking settings for the Monado service.
+        if (seg.size == 2 && seg[0] == "olfx" && seg[1] == "hands") {
+            val p = Prefs(ctx)
+            val c = MatrixCursor(arrayOf("enabled", "swap"))
+            c.addRow(arrayOf<Any>(if (p.handEnabled) 1 else 0, if (p.handSwap) 1 else 0))
+            return c
+        }
         if (seg.size < 2 || seg[0] != "openxr" || !uri.path.orEmpty().contains("runtimes/active")) return null
 
         // /functions sub-path: we expose no function remapping.
