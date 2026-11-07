@@ -255,6 +255,8 @@ android {
         flavor.applicationId 'org.olfx.launcher'
         flavor.versionCode = 10
         flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_SERVICE=ON"
+        // The native client binds to the runtime service by package name: it is the OLFX app itself now.
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_ANDROID_PACKAGE=org.olfx.launcher"
         flavor.externalNativeBuild.cmake.targets "openxr_monado", "monado-service"
         flavor.buildConfigField "boolean", "inProcess", "false"
         flavor.resValue "string", "app_name", appName
