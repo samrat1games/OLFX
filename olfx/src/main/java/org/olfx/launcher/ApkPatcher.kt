@@ -116,9 +116,11 @@ object ApkPatcher {
         val unsigned = File(out.parentFile, "$pkg.unsigned.apk")
 
         progress("Правка APK…")
+        // Oculus XR plugin games: wrap libOVRPlugin.so with a forwarding shim (traces calls, can override them).
+        val ovrShim = try { ctx.assets.open("ovr/libOVRPlugin_shim_arm64.so").use { it.readBytes() } } catch (e: Exception) { null }
         val khronos = try { ctx.assets.open("khronos/libopenxr_loader_arm64.so").use { it.readBytes() } } catch (e: Exception) { null }
         try {
-            rewrite(src, unsigned, mode, khronos)
+            rewrite(src, unsigned, mode, khronos, ovrShim)
         } catch (e: PatchException) {
             unsigned.delete(); throw e
         }
@@ -138,7 +140,7 @@ object ApkPatcher {
         override fun write(b: ByteArray, off: Int, len: Int) { out.write(b, off, len); count += len }
     }
 
-    private fun rewrite(src: File, dst: File, mode: String, khronosLoader: ByteArray?) {
+    private fun rewrite(src: File, dst: File, mode: String, khronosLoader: ByteArray?, ovrShim: ByteArray?) {
         var patched = false
         ZipFile(src).use { zin ->
             val names = zin.entries().asSequence().map { it.name }.toSet()
@@ -153,9 +155,14 @@ object ApkPatcher {
                         // drop unused ABIs on arm64 devices (smaller install, less to map)
                         if (hasArm64 && (n.startsWith("lib/armeabi") || n.startsWith("lib/x86"))) continue
 
+                        val hasReal = "lib/arm64-v8a/libOVRPlugin_real.so" in names
+                        // first patch: the original becomes *_real; re-patch: only the shim itself is refreshed
+                        val outName = if (n == "lib/arm64-v8a/libOVRPlugin.so" && ovrShim != null && !hasReal) "lib/arm64-v8a/libOVRPlugin_real.so" else n
                         val isBoot = n == BOOT_CONFIG
                         var data: ByteArray? = null
-                        if (isBoot) {
+                        if (n == "lib/arm64-v8a/libOVRPlugin.so" && ovrShim != null && hasReal) {
+                            data = ovrShim
+                        } else if (isBoot) {
                             data = patchBootConfig(zin.getInputStream(e).readBytes(), mode)
                             patched = true
                         } else if (n == "lib/arm64-v8a/libopenxr_loader.so" && khronosLoader != null) {
@@ -173,7 +180,7 @@ object ApkPatcher {
                         }
                         // resources.arsc must be stored uncompressed and 4-byte aligned for apps targeting Android 11+
                         val stored = e.method == ZipEntry.STORED || n == "resources.arsc"
-                        val ne = ZipEntry(n)
+                        val ne = ZipEntry(outName)
                         ne.time = e.time
                         if (stored) {
                             ne.method = ZipEntry.STORED
@@ -184,7 +191,7 @@ object ApkPatcher {
                                 ne.size = e.size; ne.compressedSize = e.size; ne.crc = e.crc
                             }
                             val align = if (n.endsWith(".so")) 16384 else 4
-                            ne.extra = alignExtra(counting.count, n, align)
+                            ne.extra = alignExtra(counting.count, outName, align)
                         } else {
                             ne.method = ZipEntry.DEFLATED
                         }
@@ -194,6 +201,16 @@ object ApkPatcher {
                         } else {
                             zin.getInputStream(e).use { it.copyTo(zout, 1 shl 16) }
                         }
+                        zout.closeEntry()
+                    }
+                    if (ovrShim != null && "lib/arm64-v8a/libOVRPlugin.so" in names && "lib/arm64-v8a/libOVRPlugin_real.so" !in names) {
+                        val se = ZipEntry("lib/arm64-v8a/libOVRPlugin.so")
+                        se.method = ZipEntry.STORED
+                        se.size = ovrShim.size.toLong(); se.compressedSize = ovrShim.size.toLong()
+                        se.crc = CRC32().also { it.update(ovrShim) }.value
+                        se.extra = alignExtra(counting.count, se.name, 16384)
+                        zout.putNextEntry(se)
+                        zout.write(ovrShim)
                         zout.closeEntry()
                     }
                     // Patch marker for every kind of game (Unity's boot.config only exists in Unity games).

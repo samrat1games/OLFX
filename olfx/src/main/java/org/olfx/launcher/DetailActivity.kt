@@ -64,7 +64,9 @@ class DetailActivity : AppCompatActivity() {
                 setOnClickListener { onClick() }
             }
 
-        col.addView(action("Play", true) { play() },
+        val playBtn = action("Play", true) { play() }
+        playBtn.setOnLongClickListener { runApkPatch(); true } // long press: patch again (updates the VR patch)
+        col.addView(playBtn,
             LinearLayout.LayoutParams(-1, dp(56)).also { it.topMargin = dp(32) })
         favBtn = action("", false) { prefs.toggleFav(e.pkg); updateButtons() }
         col.addView(favBtn, LinearLayout.LayoutParams(-1, dp(56)).also { it.topMargin = dp(12) })
