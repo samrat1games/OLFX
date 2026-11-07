@@ -290,17 +290,21 @@ public final class OlfxHands {
         return new ByteBufferImageBuilder(rgba, w, h, MPImage.IMAGE_FORMAT_RGBA).build();
     }
 
-    // ---- smoothing --------------------------------------------------------------------------------------------
+    // ---- filtering ---------------------------------------------------------------------------------------------
 
     /** One Euro filter for a 3-vector: low lag when moving, strong smoothing when still. */
     private static final class OneEuro3 {
-        private final float minCutoff;
+        private final float[] minCutoff;
         private final float beta;
         private final float[] x = new float[3];
         private final float[] dx = new float[3];
         private boolean init = false;
 
         OneEuro3(float minCutoff, float beta) {
+            this(new float[] {minCutoff, minCutoff, minCutoff}, beta);
+        }
+
+        OneEuro3(float[] minCutoff, float beta) {
             this.minCutoff = minCutoff;
             this.beta = beta;
         }
@@ -325,128 +329,246 @@ public final class OlfxHands {
             for (int i = 0; i < 3; i++) {
                 float rawD = (in[i] - x[i]) / dt;
                 dx[i] = dx[i] + ad * (rawD - dx[i]);
-                float cutoff = minCutoff + beta * Math.abs(dx[i]);
-                float a = alpha(cutoff, dt);
-                x[i] = x[i] + a * (in[i] - x[i]);
+                float cutoff = minCutoff[i] + beta * Math.abs(dx[i]);
+                x[i] = x[i] + alpha(cutoff, dt) * (in[i] - x[i]);
             }
             return x.clone();
         }
     }
 
-    private static final class HandFilter {
-        final OneEuro3 root = new OneEuro3(1.8f, 4.0f);
-        final OneEuro3[] rel = new OneEuro3[JOINTS];
-        long lastNs = 0;
+    /** Bones as (parent, child) landmark indices, parents always before children (forward kinematics order). */
+    private static final int[][] BONES = {
+        {0, 1}, {1, 2}, {2, 3}, {3, 4},         // thumb
+        {0, 5}, {5, 6}, {6, 7}, {7, 8},         // index
+        {0, 9}, {9, 10}, {10, 11}, {11, 12},    // middle
+        {0, 13}, {13, 14}, {14, 15}, {15, 16},  // ring
+        {0, 17}, {17, 18}, {18, 19}, {19, 20},  // little
+    };
 
-        HandFilter() {
-            for (int i = 0; i < JOINTS; i++) {
-                rel[i] = new OneEuro3(3.5f, 8.0f);
+    /** One tracked hand: follows a hand over time, owns its filters and its (learned) bone lengths. */
+    private static final class Track {
+        boolean active;
+        long lastSeenNs;
+        float wu, wv;       // wrist position in the image (0..1), for matching
+        float chirality;    // -1 = left, +1 = right: smoothed model label
+        int slot = -1;      // 0 = left output, 1 = right output
+        final OneEuro3 root = new OneEuro3(new float[] {1.6f, 1.6f, 0.7f}, 3.0f);
+        final OneEuro3[] dir = new OneEuro3[BONES.length];
+        final float[] len = new float[BONES.length];
+        boolean hasLen;
+        long lastFilterNs;
+        float[] lastRoot;   // last accepted wrist position (head space)
+        int rejected;
+
+        Track() {
+            for (int i = 0; i < dir.length; i++) {
+                dir[i] = new OneEuro3(5.0f, 10.0f);
             }
         }
 
-        void reset() {
+        void resetFilters() {
             root.reset();
-            for (OneEuro3 f : rel) {
+            for (OneEuro3 f : dir) {
                 f.reset();
             }
+            hasLen = false;
+            lastFilterNs = 0;
+            lastRoot = null;
+            rejected = 0;
         }
     }
 
-    private final HandFilter[] filters = {new HandFilter(), new HandFilter()};
+    private final Track[] tracks = {new Track(), new Track()};
     private long statFrames = 0;
     private long statHandFrames = 0;
     private long statDetectNs = 0;
     private long statConvNs = 0;
+    private long statZPlus = 0;
+    private long statZMinus = 0;
+    private double statResid = 0;
+    private long statResidN = 0;
+    private long statRejected = 0;
 
-    /** Smooth the wrist position and every joint relative to the wrist (keeps the hand shape intact). */
-    private void smooth(int hand, float[][] j) {
-        HandFilter f = filters[hand];
-        long now = System.nanoTime();
-        if (f.lastNs == 0 || now - f.lastNs > 300_000_000L) {
-            f.reset();
-        }
-        float dt = f.lastNs == 0 ? 0.033f : Math.min(0.2f, Math.max(0.005f, (now - f.lastNs) / 1e9f));
-        f.lastNs = now;
-        float[] wrist = j[1].clone();
-        float[] r = f.root.filter(wrist, dt);
-        for (int k = 0; k < JOINTS; k++) {
-            float[] off = f.rel[k].filter(sub(j[k], wrist), dt);
-            j[k] = new float[] {r[0] + off[0], r[1] + off[1], r[2] + off[2]};
-        }
-    }
+    // ---- pose from the 21 landmarks ----------------------------------------------------------------------------
 
-    // ------------------------------------------------------------------------------------------------------------
-
-    private void publish(HandLandmarkerResult result) {
-        boolean[] seen = new boolean[2];
-        List<List<NormalizedLandmark>> all = result.landmarks();
-        List<List<Landmark>> world = result.worldLandmarks();
-        List<List<Category>> hands = result.handedness();
-        int n = Math.min(2, all.size());
-
-        // Which user hand is each detection? The rear camera image is NOT mirrored, but the model's handedness
-        // assumes a mirrored (selfie) image, so its label must be swapped. With two hands the image position is the
-        // more reliable cue: the user's left hand is on the left of the (upright, rear camera) image.
-        int[] assign = new int[n];
-        for (int i = 0; i < n; i++) {
-            String label = hands.get(i).isEmpty() ? "" : hands.get(i).get(0).categoryName();
-            assign[i] = "Left".equalsIgnoreCase(label) ? 1 : 0;
-        }
-        if (n == 2 && all.get(0).size() >= 21 && all.get(1).size() >= 21) {
-            boolean firstIsLeft = all.get(0).get(0).x() < all.get(1).get(0).x();
-            assign[0] = firstIsLeft ? 0 : 1;
-            assign[1] = firstIsLeft ? 1 : 0;
-        }
-
-        for (int i = 0; i < n; i++) {
-            if (all.get(i).size() < 21 || world.get(i).size() < 21) {
-                continue;
-            }
-            int hand = assign[i];
-            if (seen[hand]) {
-                continue;
-            }
-            float[][] j = toJoints(all.get(i), world.get(i));
-            if (j == null) {
-                continue;
-            }
-            smooth(hand, j);
-            nativeSetHand(hand, buildOutput(j, hand == 0), true);
-            seen[hand] = true;
-            missing[hand] = 0;
-        }
-        for (int h = 0; h < 2; h++) {
-            if (!seen[h] && ++missing[h] == 6) { // hold the last pose for ~200 ms, then drop the hand
-                nativeSetHand(h, null, false);
-            }
-        }
-        statFrames++;
-        if (seen[0] || seen[1]) {
-            statHandFrames++;
-        }
-    }
-
-    /** 21 MediaPipe landmarks -> 26 OpenXR joint positions in head space (before smoothing). */
-    private float[][] toJoints(List<NormalizedLandmark> lm, List<Landmark> wl) {
-        // Depth from apparent size: palm bones are known in metres (world landmarks) and in pixels (image).
-        double worldLen = dist(wl, 0, 9) + dist(wl, 5, 17) + dist(wl, 0, 5) + dist(wl, 0, 17);
-        double pixLen = pixDist(lm, 0, 9) + pixDist(lm, 5, 17) + pixDist(lm, 0, 5) + pixDist(lm, 0, 17);
-        if (worldLen <= 1e-4 || pixLen <= 1e-3) {
-            return null;
-        }
-        double depthWrist = focalPx * worldLen / pixLen;
-
-        float[][] p = new float[21][3];
+    /**
+     * Least-squares translation of the model's metric 3D hand (world landmarks) so that its perspective projection
+     * matches the 21 image landmarks. Uses every point and the hand's tilt, so depth does not jump when the hand
+     * rotates (apparent size alone does). Returns {tx, ty, tz, residualPx} in camera space (x right, y down,
+     * z forward), or null.
+     */
+    private double[] solveTranslation(List<NormalizedLandmark> lm, List<Landmark> wl, int zSign) {
+        double[][] ata = new double[3][3];
+        double[] atb = new double[3];
+        final double f = focalPx;
+        double[] us = new double[21];
+        double[] vs = new double[21];
         for (int i = 0; i < 21; i++) {
-            double z = depthWrist + (wl.get(i).z() - wl.get(0).z());
             double u = lm.get(i).x() * uprightW - uprightW / 2.0;
             double v = lm.get(i).y() * uprightH - uprightH / 2.0;
-            // camera space: x right, y down, z forward -> OpenXR head space: x right, y up, -z forward
-            p[i][0] = (float) (u / focalPx * z);
-            p[i][1] = (float) (-v / focalPx * z);
-            p[i][2] = (float) (-z);
+            us[i] = u;
+            vs[i] = v;
+            double wx = wl.get(i).x();
+            double wy = wl.get(i).y();
+            double wz = zSign * wl.get(i).z();
+            // f*tx - u*tz = u*wz - f*wx
+            accumulate(ata, atb, f, 0, -u, u * wz - f * wx);
+            // f*ty - v*tz = v*wz - f*wy
+            accumulate(ata, atb, 0, f, -v, v * wz - f * wy);
+        }
+        double[] t = solve3(ata, atb);
+        if (t == null) {
+            return null;
+        }
+        double err = 0;
+        for (int i = 0; i < 21; i++) {
+            double X = t[0] + wl.get(i).x();
+            double Y = t[1] + wl.get(i).y();
+            double Z = t[2] + zSign * wl.get(i).z();
+            if (Z < 0.02) {
+                return null;
+            }
+            double du = f * X / Z - us[i];
+            double dv = f * Y / Z - vs[i];
+            err += Math.sqrt(du * du + dv * dv);
+        }
+        return new double[] {t[0], t[1], t[2], err / 21.0};
+    }
+
+    private static void accumulate(double[][] ata, double[] atb, double a0, double a1, double a2, double b) {
+        double[] a = {a0, a1, a2};
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 3; c++) {
+                ata[r][c] += a[r] * a[c];
+            }
+            atb[r] += a[r] * b;
+        }
+    }
+
+    private static double[] solve3(double[][] m, double[] b) {
+        double[][] a = new double[3][4];
+        for (int r = 0; r < 3; r++) {
+            System.arraycopy(m[r], 0, a[r], 0, 3);
+            a[r][3] = b[r];
+        }
+        for (int c = 0; c < 3; c++) {
+            int piv = c;
+            for (int r = c + 1; r < 3; r++) {
+                if (Math.abs(a[r][c]) > Math.abs(a[piv][c])) {
+                    piv = r;
+                }
+            }
+            if (Math.abs(a[piv][c]) < 1e-9) {
+                return null;
+            }
+            double[] tmp = a[c];
+            a[c] = a[piv];
+            a[piv] = tmp;
+            for (int r = 0; r < 3; r++) {
+                if (r != c) {
+                    double k = a[r][c] / a[c][c];
+                    for (int cc = c; cc < 4; cc++) {
+                        a[r][cc] -= k * a[c][cc];
+                    }
+                }
+            }
+        }
+        return new double[] {a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]};
+    }
+
+    /**
+     * Rigid, smoothed 21-point hand in head space (x right, y up, -z forward), or null if the frame is not
+     * trustworthy.
+     */
+    private float[][] poseLandmarks(Track tr, List<NormalizedLandmark> lm, List<Landmark> wl) {
+        int zSign;
+        double[] t;
+        if (statZPlus + statZMinus >= 30) {
+            // Once enough frames have voted, stick to one axis convention: flipping it per frame bends the hand.
+            zSign = statZMinus >= statZPlus ? -1 : 1;
+            t = solveTranslation(lm, wl, zSign);
+            if (t == null) {
+                return null;
+            }
+        } else {
+            double[] plus = solveTranslation(lm, wl, +1);
+            double[] minus = solveTranslation(lm, wl, -1);
+            if (plus != null && (minus == null || plus[3] <= minus[3])) {
+                t = plus;
+                zSign = 1;
+                statZPlus++;
+            } else if (minus != null) {
+                t = minus;
+                zSign = -1;
+                statZMinus++;
+            } else {
+                return null;
+            }
+        }
+        statResid += t[3];
+        statResidN++;
+        double depth = t[2];
+        if (depth < 0.10 || depth > 1.5 || t[3] > 60.0) {
+            return null; // behind the lens, absurdly far or the model does not fit the image
         }
 
+        // Raw landmark positions: the model's metric shape moved to where the image says it is.
+        float[][] raw = new float[21][3];
+        for (int i = 0; i < 21; i++) {
+            float x = (float) (t[0] + wl.get(i).x());
+            float y = (float) (t[1] + wl.get(i).y());
+            float z = (float) (t[2] + zSign * wl.get(i).z());
+            raw[i][0] = x;     // camera x right   -> head x right
+            raw[i][1] = -y;    // camera y down    -> head y up
+            raw[i][2] = -z;    // camera z forward -> head -z forward
+        }
+
+        long now = System.nanoTime();
+        if (tr.lastFilterNs != 0 && now - tr.lastFilterNs > 300_000_000L) {
+            tr.resetFilters();
+        }
+        // Reject teleports: a hand cannot move 15 cm between two frames.
+        if (tr.lastRoot != null) {
+            float dx = raw[0][0] - tr.lastRoot[0];
+            float dy = raw[0][1] - tr.lastRoot[1];
+            float dz = raw[0][2] - tr.lastRoot[2];
+            if (Math.sqrt(dx * dx + dy * dy + dz * dz) > 0.15 && ++tr.rejected <= 3) {
+                statRejected++;
+                return null;
+            }
+        }
+        tr.rejected = 0;
+        float dt = tr.lastFilterNs == 0 ? 0.033f : Math.min(0.2f, Math.max(0.005f, (now - tr.lastFilterNs) / 1e9f));
+        tr.lastFilterNs = now;
+
+        float[][] q = new float[21][];
+        q[0] = tr.root.filter(raw[0], dt);
+        tr.lastRoot = q[0].clone();
+        for (int b = 0; b < BONES.length; b++) {
+            int pa = BONES[b][0];
+            int ch = BONES[b][1];
+            float[] vec = sub(raw[ch], raw[pa]);
+            float length = (float) Math.sqrt(vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2]);
+            if (length < 1e-4f) {
+                return null;
+            }
+            float[] d = {vec[0] / length, vec[1] / length, vec[2] / length};
+            if (!tr.hasLen) {
+                tr.len[b] = length;
+            } else if (length > 0.6f * tr.len[b] && length < 1.5f * tr.len[b]) {
+                tr.len[b] += 0.04f * (length - tr.len[b]); // bones do not change length: learn it slowly
+            }
+            float[] fd = normalize(tr.dir[b].filter(d, dt));
+            q[ch] = new float[] {
+                q[pa][0] + fd[0] * tr.len[b], q[pa][1] + fd[1] * tr.len[b], q[pa][2] + fd[2] * tr.len[b]
+            };
+        }
+        tr.hasLen = true;
+        return q;
+    }
+
+    /** 21 landmarks -> 26 OpenXR joint positions. */
+    private static float[][] toJoints(float[][] p) {
         float[][] j = new float[JOINTS][3];
         j[0] = avg(p[0], p[5], p[9], p[13], p[17]);         // palm
         j[1] = p[0];                                         // wrist
@@ -462,6 +584,166 @@ public final class OlfxHands {
             j[base + 4] = p[m[3]];
         }
         return j;
+    }
+
+    // ---- who is who ---------------------------------------------------------------------------------------------
+
+    private void publish(HandLandmarkerResult result) {
+        List<List<NormalizedLandmark>> all = result.landmarks();
+        List<List<Landmark>> world = result.worldLandmarks();
+        List<List<Category>> hands = result.handedness();
+        long now = System.nanoTime();
+
+        int n = 0;
+        int[] det = new int[2];
+        for (int i = 0; i < all.size() && n < 2; i++) {
+            if (all.get(i).size() >= 21 && world.get(i).size() >= 21) {
+                det[n++] = i;
+            }
+        }
+
+        for (Track t : tracks) {
+            if (t.active && now - t.lastSeenNs > 400_000_000L) {
+                t.active = false;
+            }
+        }
+
+        // 1. match detections to existing tracks by wrist position in the image
+        Track[] matched = new Track[n];
+        boolean[] used = new boolean[2];
+        for (int d = 0; d < n; d++) {
+            NormalizedLandmark w = all.get(det[d]).get(0);
+            int best = -1;
+            float bestDist = 0.30f;
+            for (int k = 0; k < 2; k++) {
+                if (used[k] || !tracks[k].active) {
+                    continue;
+                }
+                float dist = (float) Math.hypot(w.x() - tracks[k].wu, w.y() - tracks[k].wv);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    best = k;
+                }
+            }
+            if (best >= 0) {
+                used[best] = true;
+                matched[d] = tracks[best];
+            }
+        }
+        // 2. unmatched detections start new tracks (reuse an inactive one, else the stalest)
+        for (int d = 0; d < n; d++) {
+            if (matched[d] != null) {
+                continue;
+            }
+            int k = -1;
+            for (int c = 0; c < 2; c++) {
+                if (!used[c] && !tracks[c].active) {
+                    k = c;
+                    break;
+                }
+            }
+            if (k < 0) {
+                for (int c = 0; c < 2; c++) {
+                    if (!used[c]) {
+                        k = c;
+                        break;
+                    }
+                }
+            }
+            if (k < 0) {
+                continue;
+            }
+            used[k] = true;
+            Track t = tracks[k];
+            t.resetFilters();
+            t.active = true;
+            t.slot = -1;
+            t.chirality = 0;
+            matched[d] = t;
+        }
+
+        // 3. update tracks: position, smoothed handedness vote
+        for (int d = 0; d < n; d++) {
+            Track t = matched[d];
+            if (t == null) {
+                continue;
+            }
+            NormalizedLandmark w = all.get(det[d]).get(0);
+            t.wu = w.x();
+            t.wv = w.y();
+            t.lastSeenNs = now;
+            t.active = true;
+            List<Category> cat = hands.get(det[d]);
+            if (!cat.isEmpty()) {
+                // The model assumes a mirrored image; the rear camera is not mirrored, so its label is swapped.
+                float vote = "Left".equalsIgnoreCase(cat.get(0).categoryName()) ? +1f : -1f;
+                vote *= Math.min(1f, Math.max(0.2f, cat.get(0).score()));
+                t.chirality = t.slot < 0 && t.chirality == 0 ? 0.5f * vote : 0.92f * t.chirality + 0.08f * vote;
+            }
+        }
+
+        // 4. slots: two hands -> by position (user's left hand is on the left); one hand -> by smoothed label
+        Track a = null;
+        Track b2 = null;
+        for (int d = 0; d < n; d++) {
+            if (matched[d] == null) {
+                continue;
+            }
+            if (a == null) {
+                a = matched[d];
+            } else {
+                b2 = matched[d];
+            }
+        }
+        if (a != null && b2 != null) {
+            Track left = a.wu <= b2.wu ? a : b2;
+            Track right = left == a ? b2 : a;
+            assignSlot(left, 0);
+            assignSlot(right, 1);
+        } else if (a != null) {
+            int want = a.chirality < 0 ? 0 : 1;
+            if (a.slot < 0 || (a.slot != want && Math.abs(a.chirality) > 0.25f)) {
+                assignSlot(a, want);
+            }
+        }
+
+        // 5. publish
+        boolean[] seen = new boolean[2];
+        for (int d = 0; d < n; d++) {
+            Track t = matched[d];
+            if (t == null || t.slot < 0 || seen[t.slot]) {
+                continue;
+            }
+            float[][] q = poseLandmarks(t, all.get(det[d]), world.get(det[d]));
+            if (q == null) {
+                continue;
+            }
+            float[] out = buildOutput(toJoints(q), t.slot == 0);
+            nativeSetHand(t.slot, out, true);
+            seen[t.slot] = true;
+            missing[t.slot] = 0;
+        }
+        for (int h = 0; h < 2; h++) {
+            if (!seen[h] && ++missing[h] == 6) { // hold the last pose for ~200 ms, then drop the hand
+                nativeSetHand(h, null, false);
+            }
+        }
+        statFrames++;
+        if (seen[0] || seen[1]) {
+            statHandFrames++;
+        }
+        if (statFrames % 120 == 0 && statResidN > 0) {
+            Log.i(TAG, "pose: worldZ sign +" + statZPlus + " / -" + statZMinus + ", fit error "
+                    + String.format(java.util.Locale.US, "%.1f", statResid / statResidN) + " px, rejected "
+                    + statRejected);
+        }
+    }
+
+    private void assignSlot(Track t, int slot) {
+        if (t.slot != slot) {
+            t.slot = slot;
+            t.resetFilters(); // joints are mirrored between hands: never blend across a switch
+        }
     }
 
     /** Joint frames (OpenXR convention) from the smoothed joint positions: 26 * (xyz, quat xyzw, radius). */
