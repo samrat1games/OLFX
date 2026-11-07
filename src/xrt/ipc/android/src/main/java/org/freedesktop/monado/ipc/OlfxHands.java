@@ -11,7 +11,6 @@ import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
 import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -27,11 +26,12 @@ import android.util.Log;
 import android.view.Display;
 import androidx.annotation.NonNull;
 import com.google.mediapipe.framework.image.MPImage;
-import com.google.mediapipe.framework.image.BitmapImageBuilder;
+import com.google.mediapipe.framework.image.ByteBufferImageBuilder;
 import com.google.mediapipe.tasks.components.containers.Category;
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
 import com.google.mediapipe.tasks.components.containers.Landmark;
 import com.google.mediapipe.tasks.core.BaseOptions;
+import com.google.mediapipe.tasks.core.Delegate;
 import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions;
 import com.google.mediapipe.tasks.vision.core.RunningMode;
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker;
@@ -53,6 +53,10 @@ public final class OlfxHands {
     private static final int FLOATS_PER_JOINT = 8;
 
     static native void nativeSetHand(int hand, float[] joints, boolean active);
+
+    static native void nativeYuvToRgba(
+            java.nio.ByteBuffer y, java.nio.ByteBuffer u, java.nio.ByteBuffer v, int yRow, int uvRow, int uvPix,
+            int w, int h, java.nio.ByteBuffer out);
 
     private static OlfxHands instance;
 
@@ -114,16 +118,11 @@ public final class OlfxHands {
         thread.start();
         handler = new Handler(thread.getLooper());
 
-        HandLandmarker.HandLandmarkerOptions options =
-                HandLandmarker.HandLandmarkerOptions.builder()
-                        .setBaseOptions(BaseOptions.builder().setModelAssetPath("hand_landmarker.task").build())
-                        .setRunningMode(RunningMode.VIDEO)
-                        .setNumHands(2)
-                        .setMinHandDetectionConfidence(0.5f)
-                        .setMinHandPresenceConfidence(0.5f)
-                        .setMinTrackingConfidence(0.5f)
-                        .build();
-        landmarker = HandLandmarker.createFromOptions(context, options);
+        // GPU gave no speed-up on the test tablet (pre/post-processing dominates) and risks native crashes.
+        landmarker = createLandmarker(Delegate.CPU);
+        if (landmarker == null) {
+            throw new IllegalStateException("hand landmarker unavailable");
+        }
 
         CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         String id = null;
@@ -168,6 +167,30 @@ public final class OlfxHands {
                 },
                 handler);
         Log.i(TAG, "camera " + id + " opening, focal=" + focalPx + "px, rotateCcw=" + rotationCcw);
+    }
+
+    private HandLandmarker createLandmarker(Delegate delegate) {
+        try {
+            HandLandmarker.HandLandmarkerOptions options =
+                    HandLandmarker.HandLandmarkerOptions.builder()
+                            .setBaseOptions(
+                                    BaseOptions.builder()
+                                            .setModelAssetPath("hand_landmarker.task")
+                                            .setDelegate(delegate)
+                                            .build())
+                            .setRunningMode(RunningMode.VIDEO)
+                            .setNumHands(2)
+                            .setMinHandDetectionConfidence(0.4f)
+                            .setMinHandPresenceConfidence(0.4f)
+                            .setMinTrackingConfidence(0.4f)
+                            .build();
+            HandLandmarker l = HandLandmarker.createFromOptions(context, options);
+            Log.i(TAG, "hand landmarker running on " + delegate);
+            return l;
+        } catch (Throwable t) {
+            Log.w(TAG, "hand landmarker " + delegate + " failed: " + t);
+            return null;
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -225,13 +248,22 @@ public final class OlfxHands {
             if (image == null || !running) {
                 return;
             }
-            MPImage mp = new BitmapImageBuilder(yuvToBitmap(image)).build();
+            long tc = System.nanoTime();
+            MPImage mp = toMpImage(image);
+            statConvNs += System.nanoTime() - tc;
             long ts = Math.max(lastTimestampMs + 1, image.getTimestamp() / 1_000_000L);
             lastTimestampMs = ts;
             ImageProcessingOptions opts =
                     ImageProcessingOptions.builder().setRotationDegrees(rotationCcw).build();
+            long t0 = System.nanoTime();
             HandLandmarkerResult result = landmarker.detectForVideo(mp, opts, ts);
+            statDetectNs += System.nanoTime() - t0;
             publish(result);
+            if (statFrames > 0 && statFrames % 120 == 0) {
+                Log.i(TAG, "tracking: convert " + (statConvNs / statFrames / 1_000_000L) + " ms, detect avg "
+                        + (statDetectNs / statFrames / 1_000_000L) + " ms, hand in view "
+                        + (100 * statHandFrames / statFrames) + "% of " + statFrames + " frames");
+            }
         } catch (Throwable t) {
             Log.w(TAG, "frame failed: " + t);
         } finally {
@@ -241,44 +273,106 @@ public final class OlfxHands {
         }
     }
 
-    private Bitmap bitmap;
-    private int[] argb;
+    private java.nio.ByteBuffer rgba;
 
-    /** YUV_420_888 -> ARGB_8888 bitmap (the model input must be RGBA). */
-    private Bitmap yuvToBitmap(Image image) {
+    /** Camera YUV frame -> RGBA direct buffer (native conversion) -> model input image. */
+    private MPImage toMpImage(Image image) {
         final int w = image.getWidth();
         final int h = image.getHeight();
-        if (bitmap == null || bitmap.getWidth() != w || bitmap.getHeight() != h) {
-            bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            argb = new int[w * h];
+        if (rgba == null || rgba.capacity() != w * h * 4) {
+            rgba = java.nio.ByteBuffer.allocateDirect(w * h * 4);
         }
         Image.Plane[] planes = image.getPlanes();
-        java.nio.ByteBuffer yb = planes[0].getBuffer();
-        java.nio.ByteBuffer ub = planes[1].getBuffer();
-        java.nio.ByteBuffer vb = planes[2].getBuffer();
-        final int yRow = planes[0].getRowStride();
-        final int uvRow = planes[1].getRowStride();
-        final int uvPix = planes[1].getPixelStride();
-        for (int y = 0; y < h; y++) {
-            int yi = y * yRow;
-            int uvi = (y >> 1) * uvRow;
-            int o = y * w;
-            for (int x = 0; x < w; x++) {
-                int Y = yb.get(yi + x) & 0xFF;
-                int uvIdx = uvi + (x >> 1) * uvPix;
-                int U = (ub.get(uvIdx) & 0xFF) - 128;
-                int V = (vb.get(uvIdx) & 0xFF) - 128;
-                int r = Y + ((91881 * V) >> 16);
-                int g = Y - ((22554 * U + 46802 * V) >> 16);
-                int b = Y + ((116130 * U) >> 16);
-                r = r < 0 ? 0 : Math.min(r, 255);
-                g = g < 0 ? 0 : Math.min(g, 255);
-                b = b < 0 ? 0 : Math.min(b, 255);
-                argb[o + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        nativeYuvToRgba(
+                planes[0].getBuffer(), planes[1].getBuffer(), planes[2].getBuffer(),
+                planes[0].getRowStride(), planes[1].getRowStride(), planes[1].getPixelStride(), w, h, rgba);
+        rgba.rewind();
+        return new ByteBufferImageBuilder(rgba, w, h, MPImage.IMAGE_FORMAT_RGBA).build();
+    }
+
+    // ---- smoothing --------------------------------------------------------------------------------------------
+
+    /** One Euro filter for a 3-vector: low lag when moving, strong smoothing when still. */
+    private static final class OneEuro3 {
+        private final float minCutoff;
+        private final float beta;
+        private final float[] x = new float[3];
+        private final float[] dx = new float[3];
+        private boolean init = false;
+
+        OneEuro3(float minCutoff, float beta) {
+            this.minCutoff = minCutoff;
+            this.beta = beta;
+        }
+
+        void reset() {
+            init = false;
+        }
+
+        private static float alpha(float cutoff, float dt) {
+            float tau = (float) (1.0 / (2.0 * Math.PI * cutoff));
+            return 1.0f / (1.0f + tau / dt);
+        }
+
+        float[] filter(float[] in, float dt) {
+            if (!init) {
+                System.arraycopy(in, 0, x, 0, 3);
+                dx[0] = dx[1] = dx[2] = 0;
+                init = true;
+                return x.clone();
+            }
+            float ad = alpha(1.0f, dt);
+            for (int i = 0; i < 3; i++) {
+                float rawD = (in[i] - x[i]) / dt;
+                dx[i] = dx[i] + ad * (rawD - dx[i]);
+                float cutoff = minCutoff + beta * Math.abs(dx[i]);
+                float a = alpha(cutoff, dt);
+                x[i] = x[i] + a * (in[i] - x[i]);
+            }
+            return x.clone();
+        }
+    }
+
+    private static final class HandFilter {
+        final OneEuro3 root = new OneEuro3(1.8f, 4.0f);
+        final OneEuro3[] rel = new OneEuro3[JOINTS];
+        long lastNs = 0;
+
+        HandFilter() {
+            for (int i = 0; i < JOINTS; i++) {
+                rel[i] = new OneEuro3(3.5f, 8.0f);
             }
         }
-        bitmap.setPixels(argb, 0, w, 0, 0, w, h);
-        return bitmap;
+
+        void reset() {
+            root.reset();
+            for (OneEuro3 f : rel) {
+                f.reset();
+            }
+        }
+    }
+
+    private final HandFilter[] filters = {new HandFilter(), new HandFilter()};
+    private long statFrames = 0;
+    private long statHandFrames = 0;
+    private long statDetectNs = 0;
+    private long statConvNs = 0;
+
+    /** Smooth the wrist position and every joint relative to the wrist (keeps the hand shape intact). */
+    private void smooth(int hand, float[][] j) {
+        HandFilter f = filters[hand];
+        long now = System.nanoTime();
+        if (f.lastNs == 0 || now - f.lastNs > 300_000_000L) {
+            f.reset();
+        }
+        float dt = f.lastNs == 0 ? 0.033f : Math.min(0.2f, Math.max(0.005f, (now - f.lastNs) / 1e9f));
+        f.lastNs = now;
+        float[] wrist = j[1].clone();
+        float[] r = f.root.filter(wrist, dt);
+        for (int k = 0; k < JOINTS; k++) {
+            float[] off = f.rel[k].filter(sub(j[k], wrist), dt);
+            j[k] = new float[] {r[0] + off[0], r[1] + off[1], r[2] + off[2]};
+        }
     }
 
     // ------------------------------------------------------------------------------------------------------------
@@ -288,35 +382,55 @@ public final class OlfxHands {
         List<List<NormalizedLandmark>> all = result.landmarks();
         List<List<Landmark>> world = result.worldLandmarks();
         List<List<Category>> hands = result.handedness();
-        for (int i = 0; i < all.size() && i < 2; i++) {
-            if (all.get(i).size() < 21 || world.get(i).size() < 21 || hands.get(i).isEmpty()) {
+        int n = Math.min(2, all.size());
+
+        // Which user hand is each detection? The rear camera image is NOT mirrored, but the model's handedness
+        // assumes a mirrored (selfie) image, so its label must be swapped. With two hands the image position is the
+        // more reliable cue: the user's left hand is on the left of the (upright, rear camera) image.
+        int[] assign = new int[n];
+        for (int i = 0; i < n; i++) {
+            String label = hands.get(i).isEmpty() ? "" : hands.get(i).get(0).categoryName();
+            assign[i] = "Left".equalsIgnoreCase(label) ? 1 : 0;
+        }
+        if (n == 2 && all.get(0).size() >= 21 && all.get(1).size() >= 21) {
+            boolean firstIsLeft = all.get(0).get(0).x() < all.get(1).get(0).x();
+            assign[0] = firstIsLeft ? 0 : 1;
+            assign[1] = firstIsLeft ? 1 : 0;
+        }
+
+        for (int i = 0; i < n; i++) {
+            if (all.get(i).size() < 21 || world.get(i).size() < 21) {
                 continue;
             }
-            // The rear camera image is not mirrored, which matches what the model expects: labels are correct.
-            String label = hands.get(i).get(0).categoryName();
-            int hand = "Left".equalsIgnoreCase(label) ? 0 : 1;
+            int hand = assign[i];
             if (seen[hand]) {
                 continue;
             }
-            float[] joints = toJoints(all.get(i), world.get(i), hand == 0);
-            if (joints != null) {
-                nativeSetHand(hand, joints, true);
-                seen[hand] = true;
-                missing[hand] = 0;
+            float[][] j = toJoints(all.get(i), world.get(i));
+            if (j == null) {
+                continue;
             }
+            smooth(hand, j);
+            nativeSetHand(hand, buildOutput(j, hand == 0), true);
+            seen[hand] = true;
+            missing[hand] = 0;
         }
         for (int h = 0; h < 2; h++) {
-            if (!seen[h] && ++missing[h] == 3) {
+            if (!seen[h] && ++missing[h] == 6) { // hold the last pose for ~200 ms, then drop the hand
                 nativeSetHand(h, null, false);
             }
         }
+        statFrames++;
+        if (seen[0] || seen[1]) {
+            statHandFrames++;
+        }
     }
 
-    /** 21 MediaPipe landmarks -> 26 OpenXR joints in head space. */
-    private float[] toJoints(List<NormalizedLandmark> lm, List<Landmark> wl, boolean left) {
+    /** 21 MediaPipe landmarks -> 26 OpenXR joint positions in head space (before smoothing). */
+    private float[][] toJoints(List<NormalizedLandmark> lm, List<Landmark> wl) {
         // Depth from apparent size: palm bones are known in metres (world landmarks) and in pixels (image).
-        double worldLen = dist(wl, 0, 9) + dist(wl, 5, 17);
-        double pixLen = pixDist(lm, 0, 9) + pixDist(lm, 5, 17);
+        double worldLen = dist(wl, 0, 9) + dist(wl, 5, 17) + dist(wl, 0, 5) + dist(wl, 0, 17);
+        double pixLen = pixDist(lm, 0, 9) + pixDist(lm, 5, 17) + pixDist(lm, 0, 5) + pixDist(lm, 0, 17);
         if (worldLen <= 1e-4 || pixLen <= 1e-3) {
             return null;
         }
@@ -347,11 +461,15 @@ public final class OlfxHands {
             j[base + 3] = p[m[2]];
             j[base + 4] = p[m[3]];
         }
+        return j;
+    }
 
+    /** Joint frames (OpenXR convention) from the smoothed joint positions: 26 * (xyz, quat xyzw, radius). */
+    private float[] buildOutput(float[][] j, boolean left) {
         // Back-of-hand direction. For a right hand (index on the left when looking at the back) v1 x v2 points
         // to the palm; the left hand is mirrored.
-        float[] v1 = sub(p[5], p[0]);
-        float[] v2 = sub(p[17], p[0]);
+        float[] v1 = sub(j[7], j[1]);
+        float[] v2 = sub(j[22], j[1]);
         float[] dorsal = normalize(cross(v1, v2));
         if (!left) {
             dorsal = neg(dorsal);
@@ -360,10 +478,8 @@ public final class OlfxHands {
         float[] out = new float[JOINTS * FLOATS_PER_JOINT];
         for (int k = 0; k < JOINTS; k++) {
             float[] fwd;
-            if (k == 0) {
-                fwd = sub(p[9], p[0]);
-            } else if (k == 1) {
-                fwd = sub(p[9], p[0]);
+            if (k <= 1) {
+                fwd = sub(j[12], j[1]); // wrist/palm: toward the middle finger knuckle
             } else {
                 int next = nextJoint(k);
                 fwd = next >= 0 ? sub(j[next], j[k]) : sub(j[k], j[prevJoint(k)]);
