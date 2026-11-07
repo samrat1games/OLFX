@@ -124,3 +124,5 @@ build/
 .idea/
 patch_backup/
 ipa_out/
+ios/build/
+ios/OLFX.xcodeproj/
