@@ -71,6 +71,7 @@ public class MonadoView extends SurfaceView
     @NonNull @Keep
     public static MonadoView attachToActivity(@NonNull final Activity activity) {
         final MonadoView view = new MonadoView(activity);
+        view.setKeepScreenOn(true);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
         lp.flags =
                 WindowManager.LayoutParams.FLAG_FULLSCREEN
@@ -94,6 +95,7 @@ public class MonadoView extends SurfaceView
             WindowManager.LayoutParams lp)
             throws IllegalArgumentException {
         final MonadoView view = new MonadoView(displayContext, nativePointer);
+        view.setKeepScreenOn(true); // OLFX: the player's hands/head drive the game, nobody touches the screen
         attachToWindow(displayContext, view, lp);
         return view;
     }

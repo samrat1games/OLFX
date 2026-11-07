@@ -1001,25 +1001,41 @@ public final class OlfxHands {
 
     /** Joint frames (OpenXR convention) from the smoothed joint positions: 26 * (xyz, quat xyzw, radius). */
     private float[] buildOutput(float[][] j, boolean left) {
-        // Back-of-hand direction. For a right hand (index on the left when looking at the back) v1 x v2 points
-        // to the palm; the left hand is mirrored.
+        // Palm frame. Back-of-hand direction: for a right hand (index on the left when looking at the back) v1 x v2
+        // points to the palm; the left hand is mirrored.
+        float[] palmFwd = normalize(sub(j[12], j[1]));
         float[] v1 = sub(j[7], j[1]);
         float[] v2 = sub(j[22], j[1]);
-        float[] dorsal = normalize(cross(v1, v2));
+        float[] dorsal = cross(v1, v2);
         if (!left) {
             dorsal = neg(dorsal);
         }
+        float k0 = dot(dorsal, palmFwd);
+        dorsal = normalize(new float[] {dorsal[0] - k0 * palmFwd[0], dorsal[1] - k0 * palmFwd[1], dorsal[2] - k0 * palmFwd[2]});
+        // Across the hand (finger flexion axis): x = y x z = fwd x dorsal for OpenXR joint frames.
+        float[] lateral = normalize(cross(palmFwd, dorsal));
 
         float[] out = new float[JOINTS * FLOATS_PER_JOINT];
         for (int k = 0; k < JOINTS; k++) {
-            float[] fwd;
+            float[] q;
             if (k <= 1) {
-                fwd = sub(j[12], j[1]); // wrist/palm: toward the middle finger knuckle
+                q = quatFromAxes(lateral, dorsal, neg(palmFwd)); // palm, wrist
             } else {
                 int next = nextJoint(k);
-                fwd = next >= 0 ? sub(j[next], j[k]) : sub(j[k], j[prevJoint(k)]);
+                float[] fwd = normalize(next >= 0 ? sub(j[next], j[k]) : sub(j[k], j[prevJoint(k)]));
+                if (k >= 6) {
+                    // Fingers bend around the axis across the hand, which stays well defined however far the finger
+                    // curls (the palm normal does not: a curled bone becomes parallel to it and the frame spins).
+                    q = flexFrame(fwd, lateral);
+                } else {
+                    float[] z = neg(fwd);
+                    if (norm(cross(dorsal, z)) > 0.3f) {
+                        q = orientation(fwd, dorsal); // thumb: its own plane, fine unless nearly aligned
+                    } else {
+                        q = flexFrame(fwd, lateral);
+                    }
+                }
             }
-            float[] q = orientation(normalize(fwd), dorsal);
             int o = k * FLOATS_PER_JOINT;
             out[o] = j[k][0];
             out[o + 1] = j[k][1];
@@ -1031,6 +1047,23 @@ public final class OlfxHands {
             out[o + 7] = k == 0 ? 0.0f : (k == 1 ? 0.03f : 0.01f);
         }
         return out;
+    }
+
+    /** Frame with -Z along the bone and X as close as possible to {@code lateral}. */
+    private static float[] flexFrame(float[] forward, float[] lateral) {
+        float[] z = neg(forward);
+        float d = dot(lateral, z);
+        float[] x = normalize(new float[] {lateral[0] - d * z[0], lateral[1] - d * z[1], lateral[2] - d * z[2]});
+        float[] y = cross(z, x);
+        return quatFromAxes(x, y, z);
+    }
+
+    private static float dot(float[] a, float[] b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    }
+
+    private static float norm(float[] a) {
+        return (float) Math.sqrt(dot(a, a));
     }
 
     /** Next joint along the chain for k (2..25), or -1 for fingertips. */
@@ -1053,7 +1086,11 @@ public final class OlfxHands {
         float[] z = neg(forward);
         float[] x = normalize(cross(dorsal, z));
         float[] y = cross(z, x);
-        // rotation matrix with columns x, y, z -> quaternion
+        return quatFromAxes(x, y, z);
+    }
+
+    /** Rotation matrix with columns x, y, z -> quaternion (x, y, z, w). */
+    private static float[] quatFromAxes(float[] x, float[] y, float[] z) {
         float m00 = x[0], m01 = y[0], m02 = z[0];
         float m10 = x[1], m11 = y[1], m12 = z[1];
         float m20 = x[2], m21 = y[2], m22 = z[2];

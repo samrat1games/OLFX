@@ -172,6 +172,7 @@ class SurfaceManager(context: Context) : SurfaceHolder.Callback {
         @UiThread
         private fun addViewInternal(context: Context, focusable: Boolean) {
             val v = SurfaceView(context)
+            v.keepScreenOn = true // OLFX: no touch input in VR, keep the display awake
             v.holder.addCallback(callback)
             val lp = WindowManager.LayoutParams()
             lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY

@@ -189,8 +189,11 @@ olfx_hands_get_hand_tracking(struct xrt_device *xdev,
 		out_value->values.hand_joint_set_default[i].radius = j[7];
 	}
 
-	// The hand pose is the wrist.
-	out_value->hand_pose = out_value->values.hand_joint_set_default[XRT_HAND_JOINT_WRIST].relation;
+	// Joint relations are expressed in this device's own space (head pose already applied above). Monado applies
+	// hand_pose on top of every joint, so it must be the identity: setting it to the wrist (as an earlier version did)
+	// applies the wrist pose twice, which bent the fingers and made the hands ignore head rotation.
+	out_value->hand_pose.pose = (struct xrt_pose)XRT_POSE_IDENTITY;
+	out_value->hand_pose.relation_flags = flags;
 	out_value->is_active = true;
 	return XRT_SUCCESS;
 }
