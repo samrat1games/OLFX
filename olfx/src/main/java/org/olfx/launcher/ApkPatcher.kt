@@ -172,7 +172,8 @@ object ApkPatcher {
                                 throw PatchException("Манифест: ${x.message}")
                             }
                         }
-                        val stored = e.method == ZipEntry.STORED
+                        // resources.arsc must be stored uncompressed and 4-byte aligned for apps targeting Android 11+
+                        val stored = e.method == ZipEntry.STORED || n == "resources.arsc"
                         val ne = ZipEntry(n)
                         ne.time = e.time
                         if (stored) {
