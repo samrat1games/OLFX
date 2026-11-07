@@ -155,9 +155,21 @@ class MainActivity : AppCompatActivity() {
     private fun chooseMode(src: java.io.File, pkg: String, label: String, minSdk: Int) {
         val modes = listOf(Profiles.OPT, Profiles.IMMERSIVE)
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Патч: $label")
-            .setItems(arrayOf("Оптимизация — меньше памяти и нагрузки", "Нормальное погружение — ближе к оригиналу")) { _, i ->
-                runPatch(src, pkg, minSdk, modes[i])
+            .setTitle("APK: $label")
+            .setItems(arrayOf(
+                "Патч: оптимизация — меньше памяти и нагрузки",
+                "Патч: нормальное погружение — ближе к оригиналу",
+                "Установить как есть, без патча",
+            )) { _, i ->
+                if (i < 2) runPatch(src, pkg, minSdk, modes[i])
+                else {
+                    if (isInstalled(pkg)) {
+                        androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Уже установлено")
+                            .setMessage("$label уже стоит. Для обновления подойдёт тот же ключ подписи, иначе установка откажет.")
+                            .setPositiveButton("Установить") { _, _ -> install(src) }
+                            .setNegativeButton("Отмена") { _, _ -> src.delete() }.show()
+                    } else install(src)
+                }
             }
             .setNegativeButton("Отмена") { _, _ -> src.delete() }
             .setOnCancelListener { src.delete() }
@@ -195,6 +207,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun install(apk: java.io.File) {
+        if (!packageManager.canRequestPackageInstalls()) {
+            android.widget.Toast.makeText(this, "Разрешите OLFX установку приложений и повторите выбор APK", android.widget.Toast.LENGTH_LONG).show()
+            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:$packageName")))
+            return
+        }
         try { Installer.install(this, apk) } catch (e: Exception) { fail(e) }
     }
 

@@ -39,6 +39,12 @@
 
         <receiver android:name=".InstallResultReceiver" android:exported="false" />
 
+        <activity
+            android:name=".InstallStatusActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- Screen recorder: side menu overlay, consent activity, recording service -->
         <service android:name=".MenuService" android:exported="false" />
         <service
