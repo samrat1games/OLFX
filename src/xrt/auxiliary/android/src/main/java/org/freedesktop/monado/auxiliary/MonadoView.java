@@ -114,6 +114,37 @@ public class MonadoView extends SurfaceView
 
                     SystemUiController systemUiController = new SystemUiController(view);
                     systemUiController.hide();
+
+                    // OLFX watermark: its own window above the compositor surface, removed with it.
+                    try {
+                        final android.view.View mark = OlfxWatermark.create(context);
+                        WindowManager.LayoutParams wlp =
+                                new WindowManager.LayoutParams(
+                                        WindowManager.LayoutParams.MATCH_PARENT,
+                                        WindowManager.LayoutParams.MATCH_PARENT,
+                                        lp.type,
+                                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                                | WindowManager.LayoutParams.FLAG_FULLSCREEN
+                                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                                        android.graphics.PixelFormat.TRANSLUCENT);
+                        wm.addView(mark, wlp);
+                        view.addOnAttachStateChangeListener(
+                                new android.view.View.OnAttachStateChangeListener() {
+                                    @Override
+                                    public void onViewAttachedToWindow(android.view.View v) {}
+
+                                    @Override
+                                    public void onViewDetachedFromWindow(android.view.View v) {
+                                        try {
+                                            wm.removeView(mark);
+                                        } catch (RuntimeException ignored) {
+                                        }
+                                    }
+                                });
+                    } catch (RuntimeException e) {
+                        Log.w(TAG, "watermark window failed: " + e);
+                    }
                 });
     }
 

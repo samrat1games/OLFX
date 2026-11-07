@@ -287,6 +287,8 @@ android {
         }
         jniLibs {
             useLegacyPackaging true
+            // not 16 KB aligned (triggers Android's compatibility warning) and only used for Cardboard QR scanning
+            excludes += ['**/libzxingcpp_android.so']
         }
     }
     namespace 'org.freedesktop.monado.openxr_runtime'

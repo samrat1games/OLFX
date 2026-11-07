@@ -51,7 +51,6 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
@@ -112,16 +111,6 @@
         <receiver android:name="org.olfx.launcher.InstallResultReceiver" android:exported="false" />
         <activity
             android:name="org.olfx.launcher.InstallStatusActivity"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-        <service android:name="org.olfx.launcher.MenuService" android:exported="false" />
-        <service
-            android:name="org.olfx.launcher.RecordService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
-        <activity
-            android:name="org.olfx.launcher.ProjectionRequestActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />

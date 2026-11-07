@@ -111,7 +111,6 @@ class MainActivity : AppCompatActivity() {
             text = t
             setOnClickListener { onClick() }
         }
-        head.addView(textButton("Запись") { toggleRecordMenu() })
         page.addView(head)
 
         val search = TextInputLayout(this, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
@@ -246,21 +245,6 @@ class MainActivity : AppCompatActivity() {
         title.text = if (t == TAB_FAVORITE) "Favorite" else "Games"
         if (hands) refreshHandStatus()
         refilter()
-    }
-
-    private fun toggleRecordMenu() {
-        if (!android.provider.Settings.canDrawOverlays(this)) {
-            android.widget.Toast.makeText(this, "Разрешите OLFX показываться поверх других приложений", android.widget.Toast.LENGTH_LONG).show()
-            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:$packageName")))
-            return
-        }
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 5)
-        }
-        startForegroundService(Intent(this, MenuService::class.java))
-        android.widget.Toast.makeText(this, "Меню записи включено: ‹› слева на экране", android.widget.Toast.LENGTH_LONG).show()
     }
 
     // ---- "+" : pick an APK -> patch it -> install (uninstalling a differently signed original only if needed) ----
