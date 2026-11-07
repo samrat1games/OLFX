@@ -1,0 +1,22 @@
+name: iOS app
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: cd ios && xcodegen generate
+      - run: >
+          cd ios && xcodebuild -project OLFX.xcodeproj -scheme OLFX -sdk iphoneos
+          -configuration Release CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=""
+          -derivedDataPath build build
+      - run: |
+          cd ios/build/Build/Products/Release-iphoneos
+          mkdir Payload && cp -R OLFX.app Payload/ && zip -qr OLFX.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with: { name: OLFX-ios-unsigned, path: ios/build/Build/Products/Release-iphoneos/OLFX.ipa }

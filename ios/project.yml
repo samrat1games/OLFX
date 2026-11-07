@@ -1,0 +1,15 @@
+name: OLFX
+options: { bundleIdPrefix: org.olfx, deploymentTarget: { iOS: "16.0" } }
+targets:
+  OLFX:
+    type: application
+    platform: iOS
+    sources: [OLFX]
+    info:
+      path: OLFX/Info.plist
+      properties:
+        CFBundleDisplayName: OLFX
+        NSCameraUsageDescription: OLFX uses the camera for hand tracking and 6DoF head tracking.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortrait]
+    settings: { PRODUCT_BUNDLE_IDENTIFIER: org.olfx.launcher, SWIFT_VERSION: "5.0" }
