@@ -18,6 +18,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomnavigation.BottomNavigationView
+import org.freedesktop.monado.openxr_runtime.R
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
@@ -29,7 +30,8 @@ import com.google.android.material.textfield.TextInputLayout
 
 /** Material 3 launcher: bottom bar with Games / Favorite / Hand Tracking. */
 class MainActivity : AppCompatActivity() {
-    private val monadoPkg = "org.freedesktop.monado.openxr_runtime.out_of_process"
+    // Monado is part of this app now.
+    private val monadoPkg get() = packageName
 
     private var all: List<AppEntry> = emptyList()
     private var tab = TAB_GAMES
@@ -41,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var subtitle: TextView
     private lateinit var gamesPage: View
     private lateinit var handsPage: View
+    private lateinit var storePage: View
     private lateinit var fab: ExtendedFloatingActionButton
     private lateinit var permStatus: TextView
     private lateinit var permButton: MaterialButton
@@ -62,6 +65,8 @@ class MainActivity : AppCompatActivity() {
         handsPage = buildHandsPage().also { it.visibility = View.GONE }
         content.addView(gamesPage, FrameLayout.LayoutParams(-1, -1))
         content.addView(handsPage, FrameLayout.LayoutParams(-1, -1))
+        storePage = buildStorePage().also { it.visibility = View.GONE }
+        content.addView(storePage, FrameLayout.LayoutParams(-1, -1))
 
         fab = ExtendedFloatingActionButton(this).apply {
             text = "Add APK"
@@ -77,6 +82,7 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, TAB_GAMES, 0, "Games").setIcon(R.drawable.ic_games)
             menu.add(0, TAB_FAVORITE, 1, "Favorite").setIcon(R.drawable.ic_favorite)
             menu.add(0, TAB_HANDS, 2, "Hand Tracking").setIcon(R.drawable.ic_hand)
+            menu.add(0, TAB_STORE, 3, "Store").setIcon(R.drawable.ic_store)
             setOnItemSelectedListener { selectTab(it.itemId); true }
         }
         root.addView(nav, LinearLayout.LayoutParams(-1, -2))
@@ -110,7 +116,6 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onClick() }
         }
         head.addView(textButton("Запись") { toggleRecordMenu() })
-        head.addView(textButton("Runtimes") { startActivity(Intent(this, RuntimeActivity::class.java)) })
         page.addView(head)
 
         val search = TextInputLayout(this, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
@@ -216,6 +221,47 @@ class MainActivity : AppCompatActivity() {
         return ScrollView(this).apply { addView(col) }
     }
 
+    /** Android XR titles (Google Play only): find them, then Add APK patches them for this phone. */
+    private fun buildStorePage(): View {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(24), dp(16), dp(96))
+        }
+        col.addView(headerTitle(false).apply { text = "Store"; setPadding(dp(8), 0, 0, 0) })
+        col.addView(headerTitle(true).apply { text = "Android XR games"; setPadding(dp(8), 0, 0, dp(16)) })
+        fun gap() = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = dp(12) }
+
+        col.addView(card(C.TER_CONTAINER) {
+            addView(label("How it works", 18f, C.ON_TER_CONTAINER, true))
+            addView(label(
+                "These games are sold in Google Play for Android XR headsets. Find one, get its APK (for example with " +
+                    "Aurora Store), then press Add APK: OLFX patches it for your phone and installs it.",
+                14f, C.ON_TER_CONTAINER,
+            ), LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(4) })
+        }, gap())
+
+        val titles = listOf("Inside [JOB]", "Enigmo", "Arizona Sunshine Remake", "Arizona Sunshine 2", "Vacation Simulator", "Oh My Galaxy!", "Real VR Fishing")
+        for (t in titles) {
+            col.addView(card(C.SURFACE) {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(label(t, 18f, C.TEXT, true), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(MaterialButton(this@MainActivity, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                    text = "Google Play"
+                    setOnClickListener {
+                        val q = android.net.Uri.encode(t)
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/search?q=$q&c=apps")))
+                        } catch (e: Exception) {
+                            android.widget.Toast.makeText(this@MainActivity, "No app to open the link", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                })
+            }, gap())
+        }
+        return ScrollView(this).apply { addView(col) }
+    }
+
     private fun refreshHandStatus() {
         val installed = try { packageManager.getPackageInfo(monadoPkg, 0); true } catch (e: Exception) { false }
         if (!installed) {
@@ -239,8 +285,10 @@ class MainActivity : AppCompatActivity() {
     private fun selectTab(t: Int) {
         tab = t
         val hands = t == TAB_HANDS
-        gamesPage.visibility = if (hands) View.GONE else View.VISIBLE
+        val store = t == TAB_STORE
+        gamesPage.visibility = if (hands || store) View.GONE else View.VISIBLE
         handsPage.visibility = if (hands) View.VISIBLE else View.GONE
+        storePage.visibility = if (store) View.VISIBLE else View.GONE
         if (hands) fab.hide() else fab.show()
         title.text = if (t == TAB_FAVORITE) "Favorite" else "Games"
         if (hands) refreshHandStatus()
@@ -303,7 +351,7 @@ class MainActivity : AppCompatActivity() {
                 val pkg = info.packageName
                 val label = info.applicationInfo?.let { packageManager.getApplicationLabel(it).toString() } ?: pkg
                 val minSdk = info.applicationInfo?.minSdkVersion ?: 21
-                runOnUiThread { dlg.dismiss(); chooseMode(tmp, pkg, label, minSdk) }
+                runOnUiThread { dlg.dismiss(); runPatch(tmp, pkg, minSdk, Profiles.OPT) }
             } catch (e: Exception) {
                 runOnUiThread { dlg.dismiss(); fail(e) }
             }
@@ -451,5 +499,6 @@ class MainActivity : AppCompatActivity() {
         const val TAB_GAMES = 0
         const val TAB_FAVORITE = 1
         const val TAB_HANDS = 2
+        const val TAB_STORE = 3
     }
 }

@@ -45,5 +45,4 @@ include ':src:xrt:targets:android_common'
 // by default.
 include ':src:xrt:targets:openxr_android'
 
-// OLFX: simple VR app launcher + OpenXR runtime broker (Monado / Meta Quest / Pico)
-include ':olfx'
+// OLFX launcher sources are compiled into :src:xrt:targets:openxr_android (one app: launcher + Monado)

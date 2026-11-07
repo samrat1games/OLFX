@@ -12,4 +12,11 @@ import dagger.hilt.android.HiltAndroidApp;
 
 /** Subclass required for Hilt usage. */
 @HiltAndroidApp
-public class MonadoOpenXrApplication extends Application {}
+public class MonadoOpenXrApplication extends Application {
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        // OLFX (Material You): colours from the wallpaper where the system supports it.
+        com.google.android.material.color.DynamicColors.applyToActivitiesIfAvailable(this);
+    }
+}

@@ -34,7 +34,6 @@ object ApkPatcher {
 
     private val QUERY_PACKAGES = listOf(
         "org.olfx.launcher",
-        "org.freedesktop.monado.openxr_runtime.out_of_process",
         // NOT com.oculus.systemdriver: Meta's loader would then prefer that package over the OpenXR broker
     )
     private val QUERY_ACTIONS = listOf(

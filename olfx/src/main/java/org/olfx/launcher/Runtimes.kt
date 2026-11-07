@@ -20,14 +20,13 @@ object Runtimes {
         return pm.queryIntentServices(Intent(ACTION), PackageManager.GET_META_DATA)
             .mapNotNull { ri ->
                 val si = ri.serviceInfo ?: return@mapNotNull null
-                if (si.packageName == ctx.packageName) return@mapNotNull null
                 val md = si.metaData ?: return@mapNotNull null
                 val so = md.getString(META_SO) ?: return@mapNotNull null
                 if (md.getInt(META_MAJOR, 1) != 1) return@mapNotNull null
                 val base = si.applicationInfo.nativeLibraryDir ?: return@mapNotNull null
                 val p = si.packageName
                 val kind = when {
-                    p.startsWith("org.freedesktop.monado") -> Kind.MONADO
+                    p == ctx.packageName || p.startsWith("org.freedesktop.monado") -> Kind.MONADO
                     p.startsWith("com.oculus.") || p.startsWith("com.meta.") -> Kind.OCULUS
                     p.startsWith("com.pico") || p.startsWith("com.picovr") || p.startsWith("com.pvr") -> Kind.PICO
                     else -> Kind.OTHER
@@ -58,6 +57,7 @@ object Runtimes {
         }
         val def = prefs.defaultRuntime
         if (def != "auto") byPkg(def)?.let { return it }
-        return all.firstOrNull { it.kind == Kind.MONADO } ?: all.first()
+        // The Monado built into OLFX first; any other Monado app is only a fallback.
+        return all.firstOrNull { it.pkg == ctx.packageName } ?: all.firstOrNull { it.kind == Kind.MONADO } ?: all.first()
     }
 }

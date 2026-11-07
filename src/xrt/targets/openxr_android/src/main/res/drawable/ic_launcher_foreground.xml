@@ -1,0 +1,19 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- VR visor: one clean shape, lenses cut out (even-odd), works for the themed monochrome icon too -->
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M36,38 L72,38 Q84,38 84,50 L84,58 Q84,70 72,70 L65,70 Q60,70 57.5,65.5 L54,60 L50.5,65.5 Q48,70 43,70 L36,70 Q24,70 24,58 L24,50 Q24,38 36,38 Z M32,54 A8,8 0 1,0 48,54 A8,8 0 1,0 32,54 Z M60,54 A8,8 0 1,0 76,54 A8,8 0 1,0 60,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="24" android:startY="38"
+                android:endX="84" android:endY="70">
+                <item android:offset="0" android:color="#FF9B7BFF" />
+                <item android:offset="1" android:color="#FF5B8CFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

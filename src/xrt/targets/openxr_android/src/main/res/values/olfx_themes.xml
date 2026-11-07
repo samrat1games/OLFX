@@ -1,0 +1,7 @@
+<resources>
+    <!-- Material 3 with dynamic colour (Material You) on Android 12+, a purple baseline elsewhere. -->
+    <style name="Theme.OLFX" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#6750A4</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

@@ -251,7 +251,9 @@ android {
 
     def outOfProcessBaseConfig = { flavor, appName ->
         flavor.dimension 'deployment'
-        flavor.applicationIdSuffix '.out_of_process'
+        // OLFX: the launcher and the Monado runtime are ONE app (package org.olfx.launcher)
+        flavor.applicationId 'org.olfx.launcher'
+        flavor.versionCode = 10
         flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_SERVICE=ON"
         flavor.externalNativeBuild.cmake.targets "openxr_monado", "monado-service"
         flavor.buildConfigField "boolean", "inProcess", "false"
@@ -264,7 +266,7 @@ android {
             inProcessBaseConfig(it, "Monado In Process (Debugging)")
         }
         outOfProcess {
-            outOfProcessBaseConfig(it, "Monado XR")
+            outOfProcessBaseConfig(it, "OLFX")
         }
     }
     hilt {
@@ -286,6 +288,13 @@ android {
         }
     }
     namespace 'org.freedesktop.monado.openxr_runtime'
+    // OLFX launcher sources live next to the repo root and are compiled into this app.
+    sourceSets {
+        main {
+            java.srcDirs += "${rootDir}/olfx/src/main/java"
+            assets.srcDirs += "${rootDir}/olfx/src/main/assets"
+        }
+    }
     lint {
         fatal 'StopShip'
     }
@@ -324,6 +333,8 @@ dependencies {
     implementation "com.mikepenz:aboutlibraries:${latestAboutLibsRelease}"
     implementation "androidx.cardview:cardview:$androidxCardViewVersion"
     implementation "androidx.recyclerview:recyclerview:$androidxRecyclerViewVersion"
+    // OLFX: on-device APK signing
+    implementation "com.android.tools.build:apksig:8.6.0"
 
 
     // for Hilt dependency injection
