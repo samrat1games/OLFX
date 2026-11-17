@@ -96,7 +96,8 @@ class DetailActivity : AppCompatActivity() {
     private fun isPatched() = ApkPatch.marker(this, entry.pkg) != null
 
     private fun play() {
-        if (!isPatched() && (entry.quest || entry.pico || entry.openXr)) {
+        val useOculus = entry.quest && Runtimes.resolve(this, entry.pkg)?.kind == Kind.OCULUS
+        if (!isPatched() && !useOculus && (entry.quest || entry.pico || entry.openXr)) {
             AlertDialog.Builder(this)
                 .setTitle("Нужен патч для VR")
                 .setMessage("Без патча игра не увидит VR: будет обычный 2D-экран или вылет. Пропатчить (режим «Оптимизация») " +

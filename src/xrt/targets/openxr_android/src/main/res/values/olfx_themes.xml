@@ -1,7 +1,15 @@
 <resources>
-    <!-- Material 3 with dynamic colour (Material You) on Android 12+, a purple baseline elsewhere. -->
     <style name="Theme.OLFX" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">#6750A4</item>
+        <item name="colorSurface">#F3F3F5</item>
+        <item name="colorSurfaceContainer">#E9E9EC</item>
+        <item name="colorSurfaceContainerHigh">#E1E1E5</item>
+        <item name="colorOnSurface">#1B1B1F</item>
+        <item name="colorOnSurfaceVariant">#46464E</item>
+        <item name="colorPrimary">#455C83</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondaryContainer">#DFE4EE</item>
+        <item name="colorOnSecondaryContainer">#232B38</item>
+        <item name="android:windowBackground">?attr/colorSurface</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 </resources>

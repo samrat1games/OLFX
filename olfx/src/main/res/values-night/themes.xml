@@ -1,0 +1,15 @@
+<resources>
+    <style name="Theme.OLFX" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorSurface">#18181B</item>
+        <item name="colorSurfaceContainer">#222226</item>
+        <item name="colorSurfaceContainerHigh">#2C2C31</item>
+        <item name="colorOnSurface">#E7E7EB</item>
+        <item name="colorOnSurfaceVariant">#C3C3CB</item>
+        <item name="colorPrimary">#B3C7EF</item>
+        <item name="colorOnPrimary">#1D3254</item>
+        <item name="colorSecondaryContainer">#363D49</item>
+        <item name="colorOnSecondaryContainer">#E1E7F2</item>
+        <item name="android:windowBackground">?attr/colorSurface</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

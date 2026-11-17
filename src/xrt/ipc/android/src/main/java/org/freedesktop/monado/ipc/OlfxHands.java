@@ -213,9 +213,9 @@ public final class OlfxHands {
                                             .build())
                             .setRunningMode(RunningMode.VIDEO)
                             .setNumHands(2)
-                            .setMinHandDetectionConfidence(0.4f)
-                            .setMinHandPresenceConfidence(0.4f)
-                            .setMinTrackingConfidence(0.4f)
+                            .setMinHandDetectionConfidence(0.55f)
+                            .setMinHandPresenceConfidence(0.5f)
+                            .setMinTrackingConfidence(0.5f)
                             .build();
             HandLandmarker l = HandLandmarker.createFromOptions(context, options);
             Log.i(TAG, "hand landmarker running on " + delegate);
