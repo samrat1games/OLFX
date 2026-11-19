@@ -11,18 +11,26 @@ import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.ContentObserver;
+import android.graphics.Bitmap;
 import android.graphics.ImageFormat;
+import android.graphics.Matrix;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.hardware.display.DisplayManager;
 import android.media.Image;
 import android.media.ImageReader;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
+import android.util.Size;
 import android.view.Display;
 import androidx.annotation.NonNull;
 import com.google.mediapipe.framework.image.MPImage;
@@ -47,86 +55,149 @@ import java.util.List;
  */
 public final class OlfxHands {
     private static final String TAG = "OlfxHands";
-    private static final int FRAME_W = 640;
-    private static final int FRAME_H = 480;
+    // Negotiated at runtime; 480x360 is enough for the landmark model and cheaper than 640x480.
+    private static final int TARGET_W = 640;
+    private static final int TARGET_H = 480;
+    private static final int MAX_W = 800;
+    private static final int MAX_H = 600;
     private static final int JOINTS = 26;
     private static final int FLOATS_PER_JOINT = 8;
+    // Latest-frame-only pipeline: never build an unbounded camera/inference queue.
+    private static final long MIN_FRAME_INTERVAL_NS = 33_333_333L; // ~30 Hz inference cap
+    private static final long PREVIEW_INTERVAL_NS = 66_666_666L;   // test preview ~15 Hz
 
-    static native void nativeSetHand(int hand, float[] joints, boolean active);
+    static native void nativeSetHand(int hand, float[] joints, boolean active, long timestampNs);
 
-    static native void nativeYuvToRgba(
-            java.nio.ByteBuffer y, java.nio.ByteBuffer u, java.nio.ByteBuffer v, int yRow, int uvRow, int uvPix,
-            int w, int h, java.nio.ByteBuffer out);
+    /** Bitmask: 1=device created, 2=left active, 4=right active, 8=XR_EXT_hand_tracking compiled,
+     *  16=XR_EXT_hand_interaction compiled. Used by the in-app test to diagnose OpenXR delivery. */
+    public static native int nativeHandTrackingStatus();
+
+    /** Java-side delivery counters for the in-app test (not a substitute for a game-side OpenXR probe). */
+    public static int activeHandsMask() { return activeHandsMaskStatic; }
+    public static long lastPublishAgeMs() {
+        long t = lastPublishNsStatic;
+        return t == 0 ? -1 : Math.max(0, (System.nanoTime() - t) / 1_000_000L);
+    }
+    public static long fallbackFrames() { return fallbackFramesStatic; }
+    private static volatile int activeHandsMaskStatic = 0;
+    private static volatile long lastPublishNsStatic = 0;
+    private static volatile long fallbackFramesStatic = 0;
+
+    /** Receives deliberate pinch gestures; implemented by the user-enabled accessibility service. */
+    public interface PinchListener {
+        void onPinch(int hand, float screenX, float screenY, long timestampNs);
+    }
+
+    private static volatile PinchListener pinchListener;
+
+    public static void setPinchListener(PinchListener listener) {
+        pinchListener = listener;
+    }
+
+    static native boolean nativeYuvToRgba(
+            java.nio.ByteBuffer y, java.nio.ByteBuffer u, java.nio.ByteBuffer v, int yRow, int uRow, int uPix,
+            int vRow, int vPix, int w, int h, java.nio.ByteBuffer out);
+
+    /** Visual hand-tracking test callback (camera frame + landmarks). */
+    public interface TestListener {
+        void onHandFrame(Bitmap frame, List<List<NormalizedLandmark>> uprightLandmarks, long detectNs, float fps);
+        void onHandError(String message);
+    }
 
     private static OlfxHands instance;
+    private static final Handler RETRY_HANDLER = new Handler(Looper.getMainLooper());
+    private static final java.util.concurrent.atomic.AtomicInteger RETRY_ATTEMPT = new java.util.concurrent.atomic.AtomicInteger();
+    private static Runnable runtimeRetry;
 
     private final Context context;
+    private final TestListener testListener;
     private HandlerThread thread;
     private Handler handler;
     private CameraDevice camera;
     private CameraCaptureSession session;
     private ImageReader reader;
     private HandLandmarker landmarker;
-    private HandLandmarker cpuLandmarker;
-    private HandLandmarker gpuLandmarker;
-    private int benchPhase = 0; // 0 = measuring CPU, 1 = measuring GPU, 2 = done
-    private long benchFrames = 0;
-    private long benchNs = 0;
-    private long benchCpuNs = 0;
-    private float focalPx = 500f; // focal length in pixels of the raw frame
-    private int rotationCcw = 0;  // rotation (counter-clockwise, degrees) that makes the frame upright
-    private int uprightW = FRAME_W;
-    private int uprightH = FRAME_H;
-    private final int[] missing = new int[2];
+    private int frameW = TARGET_W;
+    private int frameH = TARGET_H;
+    private float focalX = 415f;
+    private float focalY = 415f;
+    private CameraCharacteristics cameraCharacteristics;
+    private boolean cameraTimestampRealtime = false;
+    private DisplayManager.DisplayListener displayListener;
+    private ImageProcessingOptions imageProcessingOptions = ImageProcessingOptions.builder().build();
+    private int rotationClockwise = 0; // MediaPipe ImageProcessingOptions expects CLOCKWISE degrees.
+    private int uprightW = TARGET_W;
+    private int uprightH = TARGET_H;
+    private final long[] lastSeenHandNs = new long[2];
+    private final boolean[] publishedHand = new boolean[2];
     private long lastTimestampMs = 0;
+    private long lastProcessNs = 0;
+    private long lastPreviewNs = 0;
+    private long lastAcceptedNs = 0;
+    private int frameFailures = 0;
     private volatile boolean running = false;
-    private boolean swap = false; // user setting: swap left/right
+    private boolean swap = false;
+    private java.nio.ByteBuffer rgba;
+    private Bitmap rawBitmap;
+    private final Matrix previewMatrix = new Matrix();
+    private ContentObserver settingsObserver;
 
-    private OlfxHands(Context ctx) {
+    private OlfxHands(Context ctx, TestListener listener) {
         this.context = ctx.getApplicationContext();
+        this.testListener = listener;
     }
 
-    /** Starts tracking if the camera permission is granted (otherwise asks for it once). */
+    /** Starts runtime tracking if enabled and camera permission is granted. */
     public static synchronized void start(Context ctx) {
+        startInternal(ctx, null, false);
+    }
+
+    /** Starts the in-app visual test, replacing any runtime camera session. */
+    public static synchronized void startTest(Context ctx, TestListener listener) {
+        startInternal(ctx, listener, true);
+    }
+
+    private static void startInternal(Context ctx, TestListener listener, boolean test) {
         if (instance != null) {
-            return;
+            if ((test && instance.testListener == null) || (!instance.running && instance.testListener == null)) {
+                instance.close();
+                instance = null;
+            } else {
+                return;
+            }
         }
         if (ctx.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG, "No camera permission: asking");
-            try {
-                Intent i = new Intent(ctx, CameraPermissionActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                ctx.startActivity(i);
-            } catch (Exception e) {
-                Log.w(TAG, "Could not show the camera permission request: " + e);
+            if (test) {
+                if (listener != null) listener.onHandError("camera_permission");
+            } else {
+                Log.w(TAG, "No camera permission: asking");
+                try {
+                    Intent i = new Intent(ctx, CameraPermissionActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(i);
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not show the camera permission request: " + e);
+                }
             }
             return;
         }
         int[] settings = readSettings(ctx);
-        if (settings[0] == 0) {
+        if (!test && settings[0] == 0) {
             Log.i(TAG, "Hand tracking is switched off in OLFX");
             return;
         }
-        OlfxHands h = new OlfxHands(ctx);
+        OlfxHands h = new OlfxHands(ctx, listener);
         h.swap = settings[1] == 1;
-        try {
-            h.open();
-            instance = h;
-        } catch (Throwable t) {
-            Log.e(TAG, "Hand tracking failed to start", t);
-            h.close();
-        }
+        // Assign before posting initialization so stop()/settings changes cannot race a half-built instance.
+        instance = h;
+        h.openAsync();
     }
 
-    /** {enabled, swapHands} from the OLFX launcher (runtime broker provider); defaults if OLFX is unreachable. */
     private static int[] readSettings(Context ctx) {
         try (android.database.Cursor c =
                 ctx.getContentResolver()
                         .query(
-                                android.net.Uri.parse("content://org.khronos.openxr.runtime_broker/olfx/hands"),
-                                null,
-                                null,
-                                null,
-                                null)) {
+                                android.net.Uri.parse("content://" + ctx.getPackageName() + ".settings/olfx/hands"),
+                                null, null, null, null)) {
             if (c != null && c.moveToFirst()) {
                 return new int[] {c.getInt(0), c.getInt(1)};
             }
@@ -137,25 +208,69 @@ public final class OlfxHands {
     }
 
     public static synchronized void stop() {
+        clearRuntimeRetry();
         if (instance != null) {
             instance.close();
             instance = null;
         }
     }
 
-    // ------------------------------------------------------------------------------------------------------------
+    public static synchronized void stopTest() {
+        clearRuntimeRetry();
+        if (instance != null && instance.testListener != null) {
+            instance.close();
+            instance = null;
+        }
+    }
 
-    private void open() throws Exception {
+    private static void clearRuntimeRetry() {
+        RETRY_ATTEMPT.set(0);
+        if (runtimeRetry != null) {
+            RETRY_HANDLER.removeCallbacks(runtimeRetry);
+            runtimeRetry = null;
+        }
+    }
+
+    /** Bounded recovery for camera-open/inference failures. Never retries the visual test or a stopped service. */
+    private static synchronized void scheduleRuntimeRetry(Context ctx) {
+        if (MonadoService.Companion.isRunning() == false) return;
+        if (ctx.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return;
+        int attempt = RETRY_ATTEMPT.getAndIncrement();
+        if (attempt >= 4 || runtimeRetry != null) return;
+        final Context app = ctx.getApplicationContext();
+        runtimeRetry = () -> {
+            synchronized (OlfxHands.class) {
+                runtimeRetry = null;
+                startInternal(app, null, false);
+            }
+        };
+        RETRY_HANDLER.postDelayed(runtimeRetry, 1000L << attempt);
+        Log.w(TAG, "Scheduling hand-camera recovery attempt " + (attempt + 1));
+    }
+
+    private void openAsync() {
         thread = new HandlerThread("olfx-hands");
         thread.start();
         handler = new Handler(thread.getLooper());
+        running = true;
+        // Model loading, camera negotiation and inference stay off the UI/main thread.
+        handler.post(() -> {
+            try {
+                initializeOnThread();
+            } catch (Throwable t) {
+                fail(t);
+            }
+        });
+    }
 
-        // Start on the CPU; onImage() benchmarks the GPU delegate on the first frames and keeps the faster one.
-        landmarker = createLandmarker(Delegate.CPU);
-        cpuLandmarker = landmarker;
+    private void initializeOnThread() throws Exception {
+        if (!running) return;
+        // CPU delegate is the stable default for VRMobile: it does not contend with the compositor GPU queue.
+        landmarker = createLandmarker();
         if (landmarker == null) {
-            throw new IllegalStateException("hand landmarker unavailable");
+            throw new IllegalStateException("model_unavailable");
         }
+        if (!running) return;
 
         CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         String id = null;
@@ -169,61 +284,125 @@ public final class OlfxHands {
                 break;
             }
         }
-        if (id == null) {
-            throw new IllegalStateException("no back camera");
+        if (id == null || chars == null) {
+            throw new IllegalStateException("no_back_camera");
         }
+        cameraCharacteristics = chars;
+        if (Build.VERSION.SDK_INT >= 28) {
+            Integer source = chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE);
+            cameraTimestampRealtime = source != null
+                    && source == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME;
+        }
+        negotiateSize(chars);
         computeGeometry(chars);
+        // Games commonly rotate the display after the service has already opened the camera.
+        // Re-project into the new upright frame instead of keeping the launcher portrait geometry.
+        DisplayManager dm = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        displayListener = new DisplayManager.DisplayListener() {
+            @Override public void onDisplayAdded(int displayId) {}
+            @Override public void onDisplayRemoved(int displayId) {}
+            @Override public void onDisplayChanged(int displayId) {
+                if (displayId == Display.DEFAULT_DISPLAY && running && cameraCharacteristics != null) {
+                    computeGeometry(cameraCharacteristics);
+                }
+            }
+        };
+        dm.registerDisplayListener(displayListener, handler);
 
-        reader = ImageReader.newInstance(FRAME_W, FRAME_H, ImageFormat.YUV_420_888, 2);
+        reader = ImageReader.newInstance(frameW, frameH, ImageFormat.YUV_420_888, 3);
         reader.setOnImageAvailableListener(this::onImage, handler);
 
-        running = true;
+        settingsObserver = new ContentObserver(handler) {
+            @Override
+            public void onChange(boolean selfChange) {
+                applyLiveSettings();
+            }
+        };
+        try {
+            context.getContentResolver().registerContentObserver(
+                    android.net.Uri.parse("content://" + context.getPackageName() + ".settings/olfx/hands"),
+                    true, settingsObserver);
+        } catch (Exception ignored) {
+        }
         cm.openCamera(
                 id,
                 new CameraDevice.StateCallback() {
                     @Override
                     public void onOpened(@NonNull CameraDevice device) {
+                        if (!running) {
+                            device.close();
+                            return;
+                        }
                         camera = device;
                         startSession(device);
                     }
 
                     @Override
                     public void onDisconnected(@NonNull CameraDevice device) {
-                        device.close();
+                        fail(new IllegalStateException("camera_disconnected"));
                     }
 
                     @Override
                     public void onError(@NonNull CameraDevice device, int error) {
-                        Log.e(TAG, "camera error " + error);
-                        device.close();
+                        fail(new IllegalStateException("camera_error_" + error));
                     }
                 },
                 handler);
-        Log.i(TAG, "camera " + id + " opening, focal=" + focalPx + "px, rotateCcw=" + rotationCcw);
+        Log.i(TAG, "camera " + id + " opening, size=" + frameW + "x" + frameH + ", focal=" + focalX
+                + "/" + focalY + "px, rotateCw=" + rotationClockwise);
     }
 
-    private HandLandmarker createLandmarker(Delegate delegate) {
-        try {
-            HandLandmarker.HandLandmarkerOptions options =
-                    HandLandmarker.HandLandmarkerOptions.builder()
-                            .setBaseOptions(
-                                    BaseOptions.builder()
-                                            .setModelAssetPath("hand_landmarker.task")
-                                            .setDelegate(delegate)
-                                            .build())
-                            .setRunningMode(RunningMode.VIDEO)
-                            .setNumHands(2)
-                            .setMinHandDetectionConfidence(0.55f)
-                            .setMinHandPresenceConfidence(0.5f)
-                            .setMinTrackingConfidence(0.5f)
-                            .build();
-            HandLandmarker l = HandLandmarker.createFromOptions(context, options);
-            Log.i(TAG, "hand landmarker running on " + delegate);
-            return l;
-        } catch (Throwable t) {
-            Log.w(TAG, "hand landmarker " + delegate + " failed: " + t);
-            return null;
+    /** Pick a supported YUV size instead of assuming every device exposes 640x480. */
+    private void negotiateSize(CameraCharacteristics c) {
+        StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+        Size best = null;
+        double bestScore = Double.MAX_VALUE;
+        if (map != null) {
+            for (Size s : map.getOutputSizes(ImageFormat.YUV_420_888)) {
+                int w = s.getWidth(), h = s.getHeight();
+                if (w <= 0 || h <= 0 || w > MAX_W || h > MAX_H || (w % 2) != 0 || (h % 2) != 0) continue;
+                double area = (double) w * h;
+                double targetArea = (double) TARGET_W * TARGET_H;
+                double aspect = (double) w / h;
+                double score = Math.abs(area - targetArea) / targetArea + Math.abs(aspect - 4.0 / 3.0) * 0.25;
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = s;
+                }
+            }
         }
+        if (best == null) {
+            throw new IllegalStateException("no_supported_yuv_size");
+        }
+        frameW = best.getWidth();
+        frameH = best.getHeight();
+    }
+
+    private HandLandmarker createLandmarker() {
+        // GPU first (the CPU path took ~100 ms a frame on this phone, i.e. 7 fps), CPU as the fallback.
+        for (Delegate dg : new Delegate[] {Delegate.GPU, Delegate.CPU}) {
+            try {
+                HandLandmarker.HandLandmarkerOptions options =
+                        HandLandmarker.HandLandmarkerOptions.builder()
+                                .setBaseOptions(
+                                        BaseOptions.builder()
+                                                .setModelAssetPath("hand_landmarker.task")
+                                                .setDelegate(dg)
+                                                .build())
+                                .setRunningMode(RunningMode.VIDEO)
+                                .setNumHands(2)
+                                .setMinHandDetectionConfidence(0.5f)
+                                .setMinHandPresenceConfidence(0.5f)
+                                .setMinTrackingConfidence(0.35f)
+                                .build();
+                HandLandmarker l = HandLandmarker.createFromOptions(context, options);
+                Log.i(TAG, "hand landmarker running on " + dg);
+                return l;
+            } catch (Throwable t) {
+                Log.w(TAG, "hand landmarker " + dg + " failed: " + t);
+            }
+        }
+        return null;
     }
 
     @SuppressWarnings("deprecation")
@@ -231,122 +410,257 @@ public final class OlfxHands {
         try {
             final CaptureRequest.Builder b = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             b.addTarget(reader.getSurface());
-            b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+            int[] afModes = cameraCharacteristicsAfModes(device);
+            if (afModes != null) {
+                for (int mode : afModes) {
+                    if (mode == CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO) {
+                        b.set(CaptureRequest.CONTROL_AF_MODE, mode);
+                        break;
+                    }
+                }
+            }
+            // Short exposures and no image warping: motion blur and video stabilisation are what make fast hands vanish.
+            try {
+                android.util.Range<Integer>[] ranges =
+                        cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+                android.util.Range<Integer> best = null;
+                if (ranges != null) {
+                    for (android.util.Range<Integer> r : ranges) {
+                        if (r.getUpper() > 60) continue;
+                        if (best == null || r.getUpper() > best.getUpper()
+                                || (r.getUpper().equals(best.getUpper()) && r.getLower() > best.getLower())) {
+                            best = r;
+                        }
+                    }
+                }
+                if (best != null) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, best);
+                b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF);
+                b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF);
+                b.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST);
+            } catch (Throwable t) {
+                Log.w(TAG, "camera tuning skipped: " + t);
+            }
             device.createCaptureSession(
                     Collections.singletonList(reader.getSurface()),
                     new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(@NonNull CameraCaptureSession s) {
+                            if (!running) {
+                                s.close();
+                                return;
+                            }
                             session = s;
                             try {
                                 s.setRepeatingRequest(b.build(), null, handler);
                             } catch (Exception e) {
-                                Log.e(TAG, "setRepeatingRequest", e);
+                                fail(e);
                             }
                         }
 
                         @Override
                         public void onConfigureFailed(@NonNull CameraCaptureSession s) {
-                            Log.e(TAG, "capture session configure failed");
+                            fail(new IllegalStateException("capture_configure_failed"));
                         }
                     },
                     handler);
         } catch (Exception e) {
-            Log.e(TAG, "startSession", e);
+            fail(e);
         }
     }
 
-    private void computeGeometry(CameraCharacteristics c) {
-        float[] focals = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-        android.util.SizeF sensor = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
-        if (focals != null && focals.length > 0 && sensor != null && sensor.getWidth() > 0) {
-            focalPx = focals[0] * FRAME_W / sensor.getWidth();
+    private int[] cameraCharacteristicsAfModes(CameraDevice device) {
+        try {
+            CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+            for (String cid : cm.getCameraIdList()) {
+                CameraCharacteristics c = cm.getCameraCharacteristics(cid);
+                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                    return c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                }
+            }
+        } catch (Exception ignored) {
         }
+        return null;
+    }
+
+    @SuppressWarnings("deprecation")
+    private void computeGeometry(CameraCharacteristics c) {
+        int oldRotation = rotationClockwise;
+        float oldFx = focalX;
+        float oldFy = focalY;
         Integer sensorOrientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
         int so = sensorOrientation != null ? sensorOrientation : 90;
         DisplayManager dm = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
-        Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
-        int rot = d != null ? d.getRotation() * 90 : 0;
-        int clockwise = (so - rot + 360) % 360;
-        rotationCcw = (360 - clockwise) % 360;
-        boolean rotated = clockwise == 90 || clockwise == 270;
-        uprightW = rotated ? FRAME_H : FRAME_W;
-        uprightH = rotated ? FRAME_W : FRAME_H;
+        Display d = dm != null ? dm.getDisplay(Display.DEFAULT_DISPLAY) : null;
+        int rot = 0;
+        if (d != null) {
+            switch (d.getRotation()) {
+                case android.view.Surface.ROTATION_90: rot = 90; break;
+                case android.view.Surface.ROTATION_180: rot = 180; break;
+                case android.view.Surface.ROTATION_270: rot = 270; break;
+                default: rot = 0; break;
+            }
+        }
+        rotationClockwise = HandImageGeometry.clockwiseRotation(so, rot);
+        if (rotationClockwise != oldRotation) {
+            imageProcessingOptions = ImageProcessingOptions.builder().setRotationDegrees(rotationClockwise).build();
+        }
+        boolean rotated = rotationClockwise == 90 || rotationClockwise == 270;
+        uprightW = rotated ? frameH : frameW;
+        uprightH = rotated ? frameW : frameH;
+
+        float[] focals = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+        android.util.SizeF sensor = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+        Size pixels = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+        android.graphics.Rect active = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        float[] calibrated = c.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
+        if (calibrated != null && calibrated.length >= 2 && calibrated[0] > 0 && calibrated[1] > 0
+                && pixels != null && pixels.getWidth() > 0 && pixels.getHeight() > 0) {
+            float fx = calibrated[0] * frameW / pixels.getWidth();
+            float fy = calibrated[1] * frameH / pixels.getHeight();
+            focalX = rotated ? fy : fx;
+            focalY = rotated ? fx : fy;
+        } else {
+            float[] f = HandImageGeometry.focalPixels(
+                    focals != null && focals.length > 0 ? focals[0] : 0f,
+                    sensor != null ? sensor.getWidth() : 0f,
+                    pixels != null ? pixels.getWidth() : 0,
+                    pixels != null ? pixels.getHeight() : 0,
+                    active != null ? active.width() : 0,
+                    active != null ? active.height() : 0,
+                    frameW, frameH, rotationClockwise);
+            focalX = f[0];
+            focalY = f[1];
+        }
+        if (oldRotation != rotationClockwise || Math.abs(oldFx - focalX) > 0.5f || Math.abs(oldFy - focalY) > 0.5f) {
+            resetTrackingForGeometryChange();
+            Log.i(TAG, "hand geometry updated: upright=" + uprightW + "x" + uprightH
+                    + ", focal=" + focalX + "/" + focalY + ", rotateCw=" + rotationClockwise);
+        }
+    }
+
+    private void resetTrackingForGeometryChange() {
+        for (Track t : tracks) {
+            t.active = false;
+            t.slot = -1;
+            t.chirality = 0;
+            t.resetFilters();
+        }
+        java.util.Arrays.fill(lastSeenHandNs, 0L);
+        java.util.Arrays.fill(publishedHand, false);
+        lastTimestampMs = 0;
+        nativeSetHand(0, null, false, 0L);
+        nativeSetHand(1, null, false, 0L);
+    }
+
+    private void applyLiveSettings() {
+        int[] settings = readSettings(context);
+        if (settings[0] == 0) {
+            if (testListener != null) {
+                fail(new IllegalStateException("hand_disabled"));
+            } else {
+                stop();
+            }
+            return;
+        }
+        boolean newSwap = settings[1] == 1;
+        if (newSwap != swap) {
+            swap = newSwap;
+            for (Track t : tracks) {
+                t.active = false;
+                t.slot = -1;
+                t.chirality = 0;
+                t.resetFilters();
+            }
+            nativeSetHand(0, null, false, 0L);
+            nativeSetHand(1, null, false, 0L);
+        }
     }
 
     private void onImage(ImageReader r) {
+        if (!running) return;
         Image image = null;
         try {
-            image = r.acquireLatestImage();
-            if (image == null || !running) {
-                return;
-            }
-            long tc = System.nanoTime();
-            MPImage mp = toMpImage(image);
-            statConvNs += System.nanoTime() - tc;
-            long ts = Math.max(lastTimestampMs + 1, image.getTimestamp() / 1_000_000L);
+            image = r.acquireLatestImage(); // drop stale frames; bounded latency, no queue growth
+            if (image == null || !running || landmarker == null) return;
+            long now = System.nanoTime();
+            if (now - lastProcessNs < MIN_FRAME_INTERVAL_NS) return;
+            lastProcessNs = now;
+
+            final int width = image.getWidth();
+            final int height = image.getHeight();
+            final long imageTimestampNs = HandFrameClock.normalizeTimestampNs(
+                    image.getTimestamp(), now, SystemClock.elapsedRealtimeNanos(), cameraTimestampRealtime);
+            long ts = HandFrameClock.nextMediaPipeTimestampMs(lastTimestampMs, imageTimestampNs);
             lastTimestampMs = ts;
-            ImageProcessingOptions opts =
-                    ImageProcessingOptions.builder().setRotationDegrees(rotationCcw).build();
-            long t0 = System.nanoTime();
-            HandLandmarkerResult result = landmarker.detectForVideo(mp, opts, ts);
-            long took = System.nanoTime() - t0;
-            statDetectNs += took;
-            if (benchPhase < 2) {
-                benchmark(took);
+
+            HandLandmarkerResult result;
+            long took;
+            long tc = System.nanoTime();
+            try (MPImage mp = toMpImage(image)) {
+                statConvNs += System.nanoTime() - tc;
+                // The model reads our RGBA buffer. Return the camera's YUV buffer before inference.
+                image.close();
+                image = null;
+                long t0 = System.nanoTime();
+                result = landmarker.detectForVideo(mp, imageProcessingOptions, ts);
+                took = System.nanoTime() - t0;
             }
-            publish(result);
+            statDetectNs += took;
+            // MediaPipe's normalized output is still in the unrotated camera frame. Rotate it once;
+            // use the SAME upright points for the preview, tracking association and perspective fit.
+            List<List<NormalizedLandmark>> upright = uprightLandmarks(result);
+            publish(result, upright, imageTimestampNs);
+            frameFailures = 0;
+
+            // Report processed-frame throughput, not the inverse of inference time.
+            if (lastAcceptedNs != 0) {
+                long delta = now - lastAcceptedNs;
+                if (delta > 0) {
+                    float instantFps = 1_000_000_000f / delta;
+                    fpsEma = fpsEma <= 0f ? instantFps : fpsEma * 0.9f + instantFps * 0.1f;
+                }
+            }
+            lastAcceptedNs = now;
+            TestListener l = testListener;
+            if (l != null && now - lastPreviewNs >= PREVIEW_INTERVAL_NS) {
+                lastPreviewNs = now;
+                Bitmap frame = makePreviewFrame(width, height);
+                if (frame != null) l.onHandFrame(frame, upright, took, fpsEma);
+            }
             if (statFrames > 0 && statFrames % 120 == 0) {
                 Log.i(TAG, "tracking: convert " + (statConvNs / statFrames / 1_000_000L) + " ms, detect avg "
                         + (statDetectNs / statFrames / 1_000_000L) + " ms, hand in view "
                         + (100 * statHandFrames / statFrames) + "% of " + statFrames + " frames");
             }
         } catch (Throwable t) {
-            Log.w(TAG, "frame failed: " + t);
+            frameFailures++;
+            if (frameFailures >= 10) {
+                fail(t);
+            } else {
+                Log.w(TAG, "frame failed (" + frameFailures + "/10): " + t);
+            }
         } finally {
-            if (image != null) {
-                image.close();
-            }
+            if (image != null) image.close();
         }
     }
 
-    /** CPU vs GPU delegate: time 60 frames on each, keep the faster (GPU must be clearly faster to be chosen). */
-    private void benchmark(long tookNs) {
-        benchFrames++;
-        benchNs += tookNs;
-        if (benchFrames < 60) {
-            return;
+    private Bitmap makePreviewFrame(int w, int h) {
+        if (rgba == null) return null;
+        if (rawBitmap == null || rawBitmap.getWidth() != w || rawBitmap.getHeight() != h) {
+            rawBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         }
-        long avg = benchNs / benchFrames;
-        benchFrames = 0;
-        benchNs = 0;
-        if (benchPhase == 0) {
-            benchCpuNs = avg;
-            // created here, on the thread that will use it (a GPU delegate is bound to its creating thread)
-            gpuLandmarker = createLandmarker(Delegate.GPU);
-            if (gpuLandmarker == null) {
-                benchPhase = 2;
-                Log.i(TAG, "benchmark: CPU " + avg / 1_000_000L + " ms, GPU unavailable");
-                return;
-            }
-            landmarker = gpuLandmarker;
-            benchPhase = 1;
-        } else {
-            boolean useGpu = avg < benchCpuNs * 0.8;
-            Log.i(TAG, "benchmark: CPU " + benchCpuNs / 1_000_000L + " ms, GPU " + avg / 1_000_000L + " ms -> "
-                    + (useGpu ? "GPU" : "CPU"));
-            landmarker = useGpu ? gpuLandmarker : cpuLandmarker;
-            HandLandmarker unused = useGpu ? cpuLandmarker : gpuLandmarker;
-            if (unused != null) {
-                unused.close();
-            }
-            benchPhase = 2;
+        java.nio.ByteBuffer copy = rgba.duplicate();
+        copy.rewind();
+        rawBitmap.copyPixelsFromBuffer(copy);
+        if (rotationClockwise == 0) {
+            return rawBitmap.copy(Bitmap.Config.ARGB_8888, false);
         }
+        previewMatrix.reset();
+        previewMatrix.postRotate(rotationClockwise);
+        return Bitmap.createBitmap(rawBitmap, 0, 0, w, h, previewMatrix, true);
     }
 
-    private java.nio.ByteBuffer rgba;
-
-    /** Camera YUV frame -> RGBA direct buffer (native conversion) -> model input image. */
     private MPImage toMpImage(Image image) {
         final int w = image.getWidth();
         final int h = image.getHeight();
@@ -354,11 +668,33 @@ public final class OlfxHands {
             rgba = java.nio.ByteBuffer.allocateDirect(w * h * 4);
         }
         Image.Plane[] planes = image.getPlanes();
-        nativeYuvToRgba(
-                planes[0].getBuffer(), planes[1].getBuffer(), planes[2].getBuffer(),
-                planes[0].getRowStride(), planes[1].getRowStride(), planes[1].getPixelStride(), w, h, rgba);
+        if (planes.length < 3) {
+            throw new IllegalArgumentException("yuv_unsupported");
+        }
+        boolean converted = nativeYuvToRgba(planes[0].getBuffer(), planes[1].getBuffer(), planes[2].getBuffer(),
+                planes[0].getRowStride(), planes[1].getRowStride(), planes[1].getPixelStride(),
+                planes[2].getRowStride(), planes[2].getPixelStride(), w, h, rgba);
+        if (!converted) {
+            throw new IllegalArgumentException("yuv_unsupported");
+        }
         rgba.rewind();
         return new ByteBufferImageBuilder(rgba, w, h, MPImage.IMAGE_FORMAT_RGBA).build();
+    }
+
+    private List<List<NormalizedLandmark>> uprightLandmarks(HandLandmarkerResult result) {
+        if (rotationClockwise == 0) return result.landmarks();
+        java.util.ArrayList<List<NormalizedLandmark>> hands = new java.util.ArrayList<>(result.landmarks().size());
+        for (List<NormalizedLandmark> hand : result.landmarks()) {
+            java.util.ArrayList<NormalizedLandmark> points = new java.util.ArrayList<>(hand.size());
+            for (NormalizedLandmark p : hand) {
+                points.add(NormalizedLandmark.create(
+                        HandImageGeometry.rotateX(p.x(), p.y(), rotationClockwise),
+                        HandImageGeometry.rotateY(p.x(), p.y(), rotationClockwise),
+                        p.z(), p.visibility(), p.presence()));
+            }
+            hands.add(points);
+        }
+        return hands;
     }
 
     // ---- filtering ---------------------------------------------------------------------------------------------
@@ -407,421 +743,108 @@ public final class OlfxHands {
         }
     }
 
-    /** Bones as (parent, child) landmark indices, parents always before children (forward kinematics order). */
-    private static final int[][] BONES = {
-        {0, 1}, {1, 2}, {2, 3}, {3, 4},         // thumb
-        {0, 5}, {5, 6}, {6, 7}, {7, 8},         // index
-        {0, 9}, {9, 10}, {10, 11}, {11, 12},    // middle
-        {0, 13}, {13, 14}, {14, 15}, {15, 16},  // ring
-        {0, 17}, {17, 18}, {18, 19}, {19, 20},  // little
-    };
-
-    /** One tracked hand: follows a hand over time, owns its filters and its (learned) bone lengths. */
+    /** State belongs to one hand; loss resets filters before the next detection. */
     private static final class Track {
         boolean active;
         long lastSeenNs;
-        float wu, wv;       // wrist position in the image (0..1), for matching
-        float chirality;    // -1 = left, +1 = right: smoothed model label
-        int slot = -1;      // 0 = left output, 1 = right output
-        final OneEuro3 root = new OneEuro3(new float[] {1.0f, 1.0f, 0.5f}, 3.0f);
-        final OneEuro3[] dir = new OneEuro3[BONES.length];
-        final float[] len = new float[BONES.length];
-        final float[][] prevDir = new float[BONES.length][]; // last output bone directions (resting deadband)
-        boolean hasLen;
+        float wu, wv;
+        float chirality;
+        int slot = -1;
+        final PinchGesture pinch = new PinchGesture();
+        final OneEuro3[] points = new OneEuro3[21];
+        final float[][] prevQuat = new float[JOINTS][];
         long lastFilterNs;
-        float[] lastRoot;   // last accepted wrist position (head space)
-        int rejected;
+        float[] lastRoot;
 
         Track() {
-            for (int i = 0; i < dir.length; i++) {
-                dir[i] = new OneEuro3(1.2f, 4.0f);
-            }
+            points[0] = new OneEuro3(new float[] {0.5f, 0.5f, 0.15f}, 2.0f);
+            for (int i = 1; i < points.length; i++) points[i] = new OneEuro3(0.8f, 3.0f);
         }
 
         void resetFilters() {
-            root.reset();
-            for (OneEuro3 f : dir) {
-                f.reset();
-            }
-            hasLen = false;
-            java.util.Arrays.fill(prevDir, null);
+            for (OneEuro3 f : points) f.reset();
+            java.util.Arrays.fill(prevQuat, null);
             lastFilterNs = 0;
             lastRoot = null;
-            rejected = 0;
+            pinch.reset();
         }
     }
 
     private final Track[] tracks = {new Track(), new Track()};
+    private long dbgN = 0;
+    private long lastDbgNs = 0;
     private long statFrames = 0;
     private long statHandFrames = 0;
     private long statDetectNs = 0;
     private long statConvNs = 0;
-    private long statZPlus = 0;
-    private long statZMinus = 0;
-    private double statResid = 0;
-    private long statResidN = 0;
-    private long statRejected = 0;
+    private volatile long lastNativePublishNs = 0;
+    private volatile int activeHandsMask = 0;
+    private float fpsEma = 0f;
 
-    // ---- pose from the 21 landmarks ----------------------------------------------------------------------------
-
-    /**
-     * Least-squares translation of the model's metric 3D hand (world landmarks) so that its perspective projection
-     * matches the 21 image landmarks. Uses every point and the hand's tilt, so depth does not jump when the hand
-     * rotates (apparent size alone does). Returns {tx, ty, tz, residualPx} in camera space (x right, y down,
-     * z forward), or null.
-     */
-    private double[] solveTranslation(List<NormalizedLandmark> lm, List<Landmark> wl, int zSign) {
-        double[][] ata = new double[3][3];
-        double[] atb = new double[3];
-        final double f = focalPx;
-        double[] us = new double[21];
-        double[] vs = new double[21];
-        for (int i = 0; i < 21; i++) {
-            double u = lm.get(i).x() * uprightW - uprightW / 2.0;
-            double v = lm.get(i).y() * uprightH - uprightH / 2.0;
-            us[i] = u;
-            vs[i] = v;
-            double wx = wl.get(i).x();
-            double wy = wl.get(i).y();
-            double wz = zSign * wl.get(i).z();
-            // f*tx - u*tz = u*wz - f*wx
-            accumulate(ata, atb, f, 0, -u, u * wz - f * wx);
-            // f*ty - v*tz = v*wz - f*wy
-            accumulate(ata, atb, 0, f, -v, v * wz - f * wy);
-        }
-        double[] t = solve3(ata, atb);
-        if (t == null) {
-            return null;
-        }
-        double err = 0;
-        for (int i = 0; i < 21; i++) {
-            double X = t[0] + wl.get(i).x();
-            double Y = t[1] + wl.get(i).y();
-            double Z = t[2] + zSign * wl.get(i).z();
-            if (Z < 0.02) {
-                return null;
-            }
-            double du = f * X / Z - us[i];
-            double dv = f * Y / Z - vs[i];
-            err += Math.sqrt(du * du + dv * dv);
-        }
-        return new double[] {t[0], t[1], t[2], err / 21.0};
-    }
-
-    private static void accumulate(double[][] ata, double[] atb, double a0, double a1, double a2, double b) {
-        double[] a = {a0, a1, a2};
-        for (int r = 0; r < 3; r++) {
-            for (int c = 0; c < 3; c++) {
-                ata[r][c] += a[r] * a[c];
-            }
-            atb[r] += a[r] * b;
+    /** Detect a deliberate thumb+index pinch and report a normalized screen tap position. */
+    private void maybePinch(Track t, List<NormalizedLandmark> lm, long nowNs) {
+        PinchListener listener = pinchListener;
+        if (listener == null || lm.size() < 21) return;
+        NormalizedLandmark thumb = lm.get(4);
+        NormalizedLandmark index = lm.get(8);
+        NormalizedLandmark wrist = lm.get(0);
+        NormalizedLandmark middle = lm.get(9);
+        float tipDx = (thumb.x() - index.x()) * uprightW;
+        float tipDy = (thumb.y() - index.y()) * uprightH;
+        float palmDx = (wrist.x() - middle.x()) * uprightW;
+        float palmDy = (wrist.y() - middle.y()) * uprightH;
+        float palm = (float) Math.sqrt(palmDx * palmDx + palmDy * palmDy);
+        float ratio = palm > 1e-4f ? (float) Math.sqrt(tipDx * tipDx + tipDy * tipDy) / palm : Float.NaN;
+        if (t.pinch.update(ratio, nowNs)) {
+            // Upright camera frame -> display. The rear camera is not mirrored, but the screen faces
+            // the user, so mirror X once here to make hand-right map to screen-right.
+            float nx = 1f - 0.5f * (thumb.x() + index.x());
+            float ny = 0.5f * (thumb.y() + index.y());
+            nx = Math.max(0f, Math.min(1f, nx));
+            ny = Math.max(0f, Math.min(1f, ny));
+            listener.onPinch(t.slot, nx, ny, nowNs);
         }
     }
 
-    private static double[] solve3(double[][] m, double[] b) {
-        double[][] a = new double[3][4];
-        for (int r = 0; r < 3; r++) {
-            System.arraycopy(m[r], 0, a[r], 0, 3);
-            a[r][3] = b[r];
-        }
-        for (int c = 0; c < 3; c++) {
-            int piv = c;
-            for (int r = c + 1; r < 3; r++) {
-                if (Math.abs(a[r][c]) > Math.abs(a[piv][c])) {
-                    piv = r;
-                }
-            }
-            if (Math.abs(a[piv][c]) < 1e-9) {
-                return null;
-            }
-            double[] tmp = a[c];
-            a[c] = a[piv];
-            a[piv] = tmp;
-            for (int r = 0; r < 3; r++) {
-                if (r != c) {
-                    double k = a[r][c] / a[c][c];
-                    for (int cc = c; cc < 4; cc++) {
-                        a[r][cc] -= k * a[c][cc];
-                    }
-                }
-            }
-        }
-        return new double[] {a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]};
-    }
-
-    // ---- full pose refinement ------------------------------------------------------------------------------------
-
-    private static double[][] rodrigues(double wx, double wy, double wz) {
-        double th = Math.sqrt(wx * wx + wy * wy + wz * wz);
-        if (th < 1e-12) {
-            return new double[][] {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-        }
-        double x = wx / th, y = wy / th, z = wz / th;
-        double c = Math.cos(th), sn = Math.sin(th), k = 1 - c;
-        return new double[][] {
-            {c + x * x * k, x * y * k - z * sn, x * z * k + y * sn},
-            {y * x * k + z * sn, c + y * y * k, y * z * k - x * sn},
-            {z * x * k - y * sn, z * y * k + x * sn, c + z * z * k},
-        };
-    }
-
-    private static double[][] mul(double[][] a, double[][] b) {
-        double[][] r = new double[3][3];
-        for (int i = 0; i < 3; i++) {
-            for (int j = 0; j < 3; j++) {
-                r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-            }
-        }
-        return r;
-    }
-
-    /** Residuals (px) of projecting R*w + t onto the image landmarks; fills out[42], returns the mean error. */
-    private double residuals(double[][] r, double[] t, double[][] w, double[] us, double[] vs, double[] out) {
-        double sum = 0;
-        for (int i = 0; i < 21; i++) {
-            double X = r[0][0] * w[i][0] + r[0][1] * w[i][1] + r[0][2] * w[i][2] + t[0];
-            double Y = r[1][0] * w[i][0] + r[1][1] * w[i][1] + r[1][2] * w[i][2] + t[1];
-            double Z = r[2][0] * w[i][0] + r[2][1] * w[i][1] + r[2][2] * w[i][2] + t[2];
-            if (Z < 0.02) {
-                Z = 0.02;
-            }
-            double du = focalPx * X / Z - us[i];
-            double dv = focalPx * Y / Z - vs[i];
-            out[2 * i] = du;
-            out[2 * i + 1] = dv;
-            sum += Math.sqrt(du * du + dv * dv);
-        }
-        return sum / 21.0;
-    }
-
-    /**
-     * Gauss-Newton / Levenberg-Marquardt fit of rotation + translation of the model hand to the image landmarks,
-     * starting from "no rotation + least-squares translation". Returns {tx, ty, tz, errPx, R(9)} or null.
-     */
-    private double[] solvePose(List<NormalizedLandmark> lm, List<Landmark> wl, int zSign) {
-        double[] t0 = solveTranslation(lm, wl, zSign);
-        if (t0 == null) {
-            return null;
-        }
-        double[][] w = new double[21][3];
-        double[] us = new double[21];
-        double[] vs = new double[21];
-        for (int i = 0; i < 21; i++) {
-            w[i][0] = wl.get(i).x();
-            w[i][1] = wl.get(i).y();
-            w[i][2] = zSign * wl.get(i).z();
-            us[i] = lm.get(i).x() * uprightW - uprightW / 2.0;
-            vs[i] = lm.get(i).y() * uprightH - uprightH / 2.0;
-        }
-        double[][] rot = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-        double[] t = {t0[0], t0[1], t0[2]};
-        double[] res = new double[42];
-        double cost = residuals(rot, t, w, us, vs, res);
-        double lambda = 1e-2;
-
-        for (int iter = 0; iter < 8; iter++) {
-            double[][] jac = new double[42][6];
-            double[] tmp = new double[42];
-            final double eps = 1e-4;
-            for (int k = 0; k < 6; k++) {
-                double[][] rk = rot;
-                double[] tk = t.clone();
-                if (k < 3) {
-                    double[] d = new double[3];
-                    d[k] = eps;
-                    rk = mul(rodrigues(d[0], d[1], d[2]), rot);
-                } else {
-                    tk[k - 3] += eps;
-                }
-                residuals(rk, tk, w, us, vs, tmp);
-                for (int r = 0; r < 42; r++) {
-                    jac[r][k] = (tmp[r] - res[r]) / eps;
-                }
-            }
-            double[][] a = new double[6][6];
-            double[] g = new double[6];
-            for (int r = 0; r < 42; r++) {
-                for (int i = 0; i < 6; i++) {
-                    g[i] += jac[r][i] * res[r];
-                    for (int j = 0; j < 6; j++) {
-                        a[i][j] += jac[r][i] * jac[r][j];
-                    }
-                }
-            }
-            for (int i = 0; i < 6; i++) {
-                a[i][i] *= 1 + lambda;
-                a[i][i] += 1e-9;
-            }
-            double[] step = solveN(a, g);
-            if (step == null) {
-                break;
-            }
-            double[][] rn = mul(rodrigues(-step[0], -step[1], -step[2]), rot);
-            double[] tn = {t[0] - step[3], t[1] - step[4], t[2] - step[5]};
-            double[] rtmp = new double[42];
-            double c2 = residuals(rn, tn, w, us, vs, rtmp);
-            if (c2 < cost) {
-                rot = rn;
-                t = tn;
-                res = rtmp;
-                boolean done = cost - c2 < 1e-3;
-                cost = c2;
-                lambda *= 0.5;
-                if (done) {
-                    break;
-                }
-            } else {
-                lambda *= 4;
-            }
-        }
-
-        double trace = rot[0][0] + rot[1][1] + rot[2][2];
-        double angle = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, (trace - 1) / 2))));
-        if (angle > 75 || t[2] < 0.05) {
-            // Implausible: fall back to the translation-only solution (no rotation).
-            return new double[] {t0[0], t0[1], t0[2], t0[3], 1, 0, 0, 0, 1, 0, 0, 0, 1};
-        }
-        return new double[] {
-            t[0], t[1], t[2], cost,
-            rot[0][0], rot[0][1], rot[0][2], rot[1][0], rot[1][1], rot[1][2], rot[2][0], rot[2][1], rot[2][2]
-        };
-    }
-
-    /** Solves A x = b for small dense systems (Gaussian elimination with pivoting). */
-    private static double[] solveN(double[][] m, double[] b) {
-        int n = b.length;
-        double[][] a = new double[n][n + 1];
-        for (int r = 0; r < n; r++) {
-            System.arraycopy(m[r], 0, a[r], 0, n);
-            a[r][n] = b[r];
-        }
-        for (int c = 0; c < n; c++) {
-            int piv = c;
-            for (int r = c + 1; r < n; r++) {
-                if (Math.abs(a[r][c]) > Math.abs(a[piv][c])) {
-                    piv = r;
-                }
-            }
-            if (Math.abs(a[piv][c]) < 1e-12) {
-                return null;
-            }
-            double[] t = a[c];
-            a[c] = a[piv];
-            a[piv] = t;
-            for (int r = 0; r < n; r++) {
-                if (r != c) {
-                    double k = a[r][c] / a[c][c];
-                    for (int cc = c; cc <= n; cc++) {
-                        a[r][cc] -= k * a[c][cc];
-                    }
-                }
-            }
-        }
-        double[] x = new double[n];
-        for (int i = 0; i < n; i++) {
-            x[i] = a[i][n] / a[i][i];
-        }
-        return x;
-    }
-
-    /**
-     * Rigid, smoothed 21-point hand in head space (x right, y up, -z forward), or null if the frame is not
-     * trustworthy.
-     */
+    /** Keep MediaPipe's metric hand shape and estimate only its camera-relative translation. */
     private float[][] poseLandmarks(Track tr, List<NormalizedLandmark> lm, List<Landmark> wl) {
-        int zSign;
-        double[] t;
-        if (statZPlus + statZMinus >= 30) {
-            // Once enough frames have voted, stick to one axis convention: flipping it per frame bends the hand.
-            zSign = statZMinus >= statZPlus ? -1 : 1;
-            t = solvePose(lm, wl, zSign);
-            if (t == null) {
-                return null;
-            }
-        } else {
-            double[] plus = solvePose(lm, wl, +1);
-            double[] minus = solvePose(lm, wl, -1);
-            if (plus != null && (minus == null || plus[3] <= minus[3])) {
-                t = plus;
-                zSign = 1;
-                statZPlus++;
-            } else if (minus != null) {
-                t = minus;
-                zSign = -1;
-                statZMinus++;
-            } else {
-                return null;
-            }
-        }
-        statResid += t[3];
-        statResidN++;
-        double depth = t[2];
-        if (depth < 0.10 || depth > 1.5 || t[3] > 60.0) {
-            return null; // behind the lens, absurdly far or the model does not fit the image
-        }
-
-        // Raw landmark positions: the model's metric shape moved to where the image says it is.
-        float[][] raw = new float[21][3];
+        float[][] image = new float[21][2];
+        float[][] world = new float[21][3];
         for (int i = 0; i < 21; i++) {
-            double wx = wl.get(i).x();
-            double wy = wl.get(i).y();
-            double wz = zSign * wl.get(i).z();
-            double x = t[0] + t[4] * wx + t[5] * wy + t[6] * wz;
-            double y = t[1] + t[7] * wx + t[8] * wy + t[9] * wz;
-            double z = t[2] + t[10] * wx + t[11] * wy + t[12] * wz;
-            raw[i][0] = (float) x;     // camera x right   -> head x right
-            raw[i][1] = (float) -y;    // camera y down    -> head y up
-            raw[i][2] = (float) -z;    // camera z forward -> head -z forward
+            image[i][0] = lm.get(i).x();
+            image[i][1] = lm.get(i).y();
+            world[i][0] = wl.get(i).x();
+            world[i][1] = wl.get(i).y();
+            world[i][2] = wl.get(i).z();
         }
-
+        float[][] pose = MediaPipeHandPose.convert(image, world, uprightW, uprightH,
+                focalX, focalY, rotationClockwise);
+        if (pose == null) return null;
         long now = System.nanoTime();
-        if (tr.lastFilterNs != 0 && now - tr.lastFilterNs > 300_000_000L) {
-            tr.resetFilters();
-        }
-        // Reject teleports: a hand cannot move 15 cm between two frames.
-        if (tr.lastRoot != null) {
-            float dx = raw[0][0] - tr.lastRoot[0];
-            float dy = raw[0][1] - tr.lastRoot[1];
-            float dz = raw[0][2] - tr.lastRoot[2];
-            if (Math.sqrt(dx * dx + dy * dy + dz * dz) > 0.15 && ++tr.rejected <= 3) {
-                statRejected++;
-                return null;
-            }
-        }
-        tr.rejected = 0;
-        float dt = tr.lastFilterNs == 0 ? 0.033f : Math.min(0.2f, Math.max(0.005f, (now - tr.lastFilterNs) / 1e9f));
+        if (tr.lastFilterNs != 0 && now - tr.lastFilterNs > 300_000_000L) tr.resetFilters();
+        float dt = tr.lastFilterNs == 0 ? 0.033f
+                : Math.min(0.2f, Math.max(0.005f, (now - tr.lastFilterNs) / 1e9f));
         tr.lastFilterNs = now;
-
-        float[][] q = new float[21][];
-        q[0] = tr.root.filter(raw[0], dt);
-        tr.lastRoot = q[0].clone();
-        for (int b = 0; b < BONES.length; b++) {
-            int pa = BONES[b][0];
-            int ch = BONES[b][1];
-            float[] vec = sub(raw[ch], raw[pa]);
-            float length = (float) Math.sqrt(vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2]);
-            if (length < 1e-4f) {
-                return null;
+        // The inferred depth can spike when the hand turns: limit translation as a whole,
+        // leaving individual finger motion untouched (the same policy as the iOS tracker).
+        if (tr.lastRoot != null) {
+            float[] delta = sub(pose[0], tr.lastRoot);
+            float distance = norm(delta);
+            float limit = Math.max(0.035f, Math.min(0.12f, dt * 1.2f));
+            if (distance > limit) {
+                float correction = 1f - limit / distance;
+                for (float[] point : pose) for (int c = 0; c < 3; c++) point[c] -= delta[c] * correction;
             }
-            float[] d = {vec[0] / length, vec[1] / length, vec[2] / length};
-            if (!tr.hasLen) {
-                tr.len[b] = length;
-            } else if (length > 0.6f * tr.len[b] && length < 1.5f * tr.len[b]) {
-                tr.len[b] += 0.04f * (length - tr.len[b]); // bones do not change length: learn it slowly
-            }
-            float[] fd = normalize(tr.dir[b].filter(d, dt));
-            // Resting deadband: a still finger must not creep around with the model's noise (changes under ~1 degree).
-            if (tr.prevDir[b] != null && dot(fd, tr.prevDir[b]) > 0.99985f) {
-                fd = tr.prevDir[b];
-            } else {
-                tr.prevDir[b] = fd;
-            }
-            q[ch] = new float[] {
-                q[pa][0] + fd[0] * tr.len[b], q[pa][1] + fd[1] * tr.len[b], q[pa][2] + fd[2] * tr.len[b]
-            };
         }
-        tr.hasLen = true;
-        return q;
+        float[] rawRoot = pose[0];
+        float[] root = tr.points[0].filter(rawRoot, dt);
+        for (int i = 1; i < 21; i++) {
+            float[] relative = tr.points[i].filter(sub(pose[i], rawRoot), dt);
+            pose[i] = new float[] {root[0] + relative[0], root[1] + relative[1], root[2] + relative[2]};
+        }
+        pose[0] = root;
+        tr.lastRoot = root.clone();
+        return pose;
     }
 
     /** 21 landmarks -> 26 OpenXR joint positions. */
@@ -845,8 +868,8 @@ public final class OlfxHands {
 
     // ---- who is who ---------------------------------------------------------------------------------------------
 
-    private void publish(HandLandmarkerResult result) {
-        List<List<NormalizedLandmark>> all = result.landmarks();
+    private void publish(HandLandmarkerResult result, List<List<NormalizedLandmark>> upright, long imageTimestampNs) {
+        List<List<NormalizedLandmark>> all = upright;
         List<List<Landmark>> world = result.worldLandmarks();
         List<List<Category>> hands = result.handedness();
         long now = System.nanoTime();
@@ -854,7 +877,7 @@ public final class OlfxHands {
         int n = 0;
         int[] det = new int[2];
         for (int i = 0; i < all.size() && n < 2; i++) {
-            if (all.get(i).size() >= 21 && world.get(i).size() >= 21) {
+            if (i < world.size() && all.get(i).size() >= 21 && world.get(i).size() >= 21) {
                 det[n++] = i;
             }
         }
@@ -865,27 +888,28 @@ public final class OlfxHands {
             }
         }
 
-        // 1. match detections to existing tracks by wrist position in the image
+        // Associate both detections together: greedy matching depends on MediaPipe's output order
+        // and can swap identities when one wrist is close to both existing tracks.
         Track[] matched = new Track[n];
         boolean[] used = new boolean[2];
+        float[][] distance = new float[n][2];
         for (int d = 0; d < n; d++) {
             NormalizedLandmark w = all.get(det[d]).get(0);
-            int best = -1;
-            float bestDist = 0.30f;
             for (int k = 0; k < 2; k++) {
-                if (used[k] || !tracks[k].active) {
-                    continue;
-                }
-                float dist = (float) Math.hypot(w.x() - tracks[k].wu, w.y() - tracks[k].wv);
-                if (dist < bestDist) {
-                    bestDist = dist;
-                    best = k;
-                }
+                distance[d][k] = tracks[k].active
+                        ? (float) Math.hypot(w.x() - tracks[k].wu, w.y() - tracks[k].wv)
+                        : Float.POSITIVE_INFINITY;
             }
-            if (best >= 0) {
-                used[best] = true;
-                matched[d] = tracks[best];
-            }
+        }
+        int[] assignment = HandAssociation.match(distance);
+        int best0 = assignment[0], best1 = assignment[1];
+        if (n > 0 && best0 >= 0) {
+            matched[0] = tracks[best0];
+            used[best0] = true;
+        }
+        if (n > 1 && best1 >= 0) {
+            matched[1] = tracks[best1];
+            used[best1] = true;
         }
         // 2. unmatched detections start new tracks (reuse an inactive one, else the stalest)
         for (int d = 0; d < n; d++) {
@@ -930,10 +954,12 @@ public final class OlfxHands {
             t.wv = w.y();
             t.lastSeenNs = now;
             t.active = true;
-            List<Category> cat = hands.get(det[d]);
+            List<Category> cat = det[d] < hands.size() ? hands.get(det[d]) : java.util.Collections.emptyList();
             if (!cat.isEmpty()) {
-                // The model assumes a mirrored image; the rear camera is not mirrored, so its label is swapped.
-                float vote = "Left".equalsIgnoreCase(cat.get(0).categoryName()) ? +1f : -1f;
+                // MediaPipe handedness assumes a mirrored selfie image. The rear camera is not mirrored,
+                // so a reported "Left" is the user's right hand (and vice versa) unless the user swaps them.
+                // Measured on the device: the labels already match the side of the picture, so "Left" is the left slot.
+                float vote = "Left".equalsIgnoreCase(cat.get(0).categoryName()) ? -1f : +1f;
                 if (swap) {
                     vote = -vote;
                 }
@@ -955,16 +981,34 @@ public final class OlfxHands {
                 b2 = matched[d];
             }
         }
-        if (a != null && b2 != null) {
-            boolean aIsLeft = (a.wu <= b2.wu) != swap;
-            Track left = aIsLeft ? a : b2;
-            Track right = left == a ? b2 : a;
+        if (a != null && b2 != null && a.slot >= 0 && b2.slot >= 0 && a.slot != b2.slot) {
+            // Matched tracks retain their identities even when the hands cross.
+        } else if (a != null && b2 != null && a.slot >= 0 && b2.slot < 0) {
+            assignSlot(b2, 1 - a.slot);
+        } else if (a != null && b2 != null && b2.slot >= 0 && a.slot < 0) {
+            assignSlot(a, 1 - b2.slot);
+        } else if (a != null && b2 != null) {
+            // Two hands apart in the picture: their position is far more reliable than the model's label.
+            boolean apart = Math.abs(a.wu - b2.wu) > 0.18f;
+            boolean confident = !apart && Math.abs(a.chirality) > 0.2f && Math.abs(b2.chirality) > 0.2f
+                    && (a.chirality < 0f) != (b2.chirality < 0f);
+            Track left;
+            Track right;
+            if (confident) {
+                left = a.chirality < 0f ? a : b2;
+                right = a.chirality < 0f ? b2 : a;
+            } else {
+                boolean aIsLeft = (a.wu <= b2.wu) != swap;
+                left = aIsLeft ? a : b2;
+                right = aIsLeft ? b2 : a;
+            }
             assignSlot(left, 0);
             assignSlot(right, 1);
         } else if (a != null) {
-            int want = a.chirality < 0 ? 0 : 1;
-            if (a.slot < 0 || (a.slot != want && Math.abs(a.chirality) > 0.25f)) {
-                assignSlot(a, want);
+            // Once assigned, retain identity until the track expires. Handedness often flips
+            // temporarily when a hand turns or grips a controller.
+            if (a.slot < 0) {
+                assignSlot(a, a.chirality < 0 ? 0 : 1);
             }
         }
 
@@ -975,29 +1019,49 @@ public final class OlfxHands {
             if (t == null || t.slot < 0 || seen[t.slot]) {
                 continue;
             }
+            // Pinch clicks use the 2D landmarks directly, so they still work when the 3D pose fit
+            // rejects a frame; they do not depend on the monocular depth solution.
+            maybePinch(t, all.get(det[d]), now);
             float[][] q = poseLandmarks(t, all.get(det[d]), world.get(det[d]));
             if (q == null) {
                 continue;
             }
-            float[] out = buildOutput(toJoints(q), t.slot == 0);
-            nativeSetHand(t.slot, out, true);
+            float[] out = buildOutput(toJoints(q), t.slot == 0, t);
+            if (++dbgN % 4 == 0) {
+                List<Category> dc = det[d] < hands.size() ? hands.get(det[d]) : java.util.Collections.emptyList();
+                float[] w0 = q[0];
+                float tip = 0;
+                for (int f : new int[] {8, 12, 16, 20}) {
+                    tip += (float) Math.sqrt(Math.pow(q[f][0] - w0[0], 2) + Math.pow(q[f][1] - w0[1], 2) + Math.pow(q[f][2] - w0[2], 2));
+                }
+                Log.i("OlfxHandsDbg", String.format(java.util.Locale.US,
+                        "n=%d slot=%d label=%s/%.2f chir=%.2f uv=%.2f,%.2f wrist=(%.3f %.3f %.3f) tipAvg=%.3f idx=(%.3f %.3f %.3f) dtMs=%d",
+                        n, t.slot, dc.isEmpty() ? "-" : dc.get(0).categoryName(), dc.isEmpty() ? 0f : dc.get(0).score(),
+                        t.chirality, t.wu, t.wv, w0[0], w0[1], w0[2], tip / 4f, q[8][0], q[8][1], q[8][2],
+                        (now - lastDbgNs) / 1000000));
+                lastDbgNs = now;
+            }
+            nativeSetHand(t.slot, out, true, imageTimestampNs);
+            lastNativePublishNs = now;
+            lastPublishNsStatic = now;
             seen[t.slot] = true;
-            missing[t.slot] = 0;
+            lastSeenHandNs[t.slot] = now;
+            publishedHand[t.slot] = true;
         }
         for (int h = 0; h < 2; h++) {
-            if (!seen[h] && ++missing[h] == 6) { // hold the last pose for ~200 ms, then drop the hand
-                nativeSetHand(h, null, false);
+            if (!seen[h] && publishedHand[h] && now - lastSeenHandNs[h] > 450_000_000L) {
+                nativeSetHand(h, null, false, 0L);
+                publishedHand[h] = false;
             }
         }
+        activeHandsMask = (seen[0] ? 1 : 0) | (seen[1] ? 2 : 0);
+        activeHandsMaskStatic = activeHandsMask;
+        if (activeHandsMask != 0) RETRY_ATTEMPT.set(0);
         statFrames++;
         if (seen[0] || seen[1]) {
             statHandFrames++;
         }
-        if (statFrames % 120 == 0 && statResidN > 0) {
-            Log.i(TAG, "pose: worldZ sign +" + statZPlus + " / -" + statZMinus + ", fit error "
-                    + String.format(java.util.Locale.US, "%.1f", statResid / statResidN) + " px, rejected "
-                    + statRejected);
-        }
+
     }
 
     private void assignSlot(Track t, int slot) {
@@ -1008,7 +1072,7 @@ public final class OlfxHands {
     }
 
     /** Joint frames (OpenXR convention) from the smoothed joint positions: 26 * (xyz, quat xyzw, radius). */
-    private float[] buildOutput(float[][] j, boolean left) {
+    private float[] buildOutput(float[][] j, boolean left, Track track) {
         // Palm frame. Back-of-hand direction: for a right hand (index on the left when looking at the back) v1 x v2
         // points to the palm; the left hand is mirrored.
         float[] palmFwd = normalize(sub(j[12], j[1]));
@@ -1044,6 +1108,15 @@ public final class OlfxHands {
                     }
                 }
             }
+            // Short quaternion nlerp removes frame-to-frame joint-frame spin without adding a prediction queue.
+            float[] previous = track.prevQuat[k];
+            if (previous != null) {
+                float sign = dot4(previous, q) < 0f ? -1f : 1f;
+                float[] blended = new float[4];
+                for (int c = 0; c < 4; c++) blended[c] = previous[c] * 0.6f + q[c] * sign * 0.4f;
+                q = normalize4(blended);
+            }
+            track.prevQuat[k] = q;
             int o = k * FLOATS_PER_JOINT;
             out[o] = j[k][0];
             out[o + 1] = j[k][1];
@@ -1158,6 +1231,16 @@ public final class OlfxHands {
         return new float[] {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
     }
 
+    private static float dot4(float[] a, float[] b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    }
+
+    private static float[] normalize4(float[] q) {
+        float n = (float) Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        if (n < 1e-9f) return new float[] {0f, 0f, 0f, 1f};
+        return new float[] {q[0] / n, q[1] / n, q[2] / n, q[3] / n};
+    }
+
     private static float[] normalize(float[] a) {
         float n = (float) Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
         if (n < 1e-9f) {
@@ -1183,6 +1266,20 @@ public final class OlfxHands {
         return r;
     }
 
+    private void fail(Throwable t) {
+        Log.e(TAG, "hand tracking failed", t);
+        running = false;
+        String message = t.getMessage();
+        if (message == null || message.isEmpty()) message = "hand_error";
+        TestListener l = testListener;
+        if (l != null) l.onHandError(message);
+        close();
+        synchronized (OlfxHands.class) {
+            if (instance == this) instance = null;
+        }
+        if (testListener == null) scheduleRuntimeRetry(context);
+    }
+
     private void close() {
         running = false;
         try {
@@ -1197,16 +1294,44 @@ public final class OlfxHands {
             if (reader != null) reader.close();
         } catch (Exception ignored) {
         }
-        try {
-            if (landmarker != null) landmarker.close();
-            if (cpuLandmarker != null && cpuLandmarker != landmarker) cpuLandmarker.close();
-            if (gpuLandmarker != null && gpuLandmarker != landmarker) gpuLandmarker.close();
-        } catch (Exception ignored) {
+        session = null;
+        camera = null;
+        reader = null;
+        if (displayListener != null) {
+            try {
+                DisplayManager dm = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+                if (dm != null) dm.unregisterDisplayListener(displayListener);
+            } catch (Exception ignored) {
+            }
+            displayListener = null;
         }
-        if (thread != null) {
-            thread.quitSafely();
+        if (settingsObserver != null) {
+            try {
+                context.getContentResolver().unregisterContentObserver(settingsObserver);
+            } catch (Exception ignored) {
+            }
+            settingsObserver = null;
         }
-        nativeSetHand(0, null, false);
-        nativeSetHand(1, null, false);
+        // Close the model on its owning thread after any in-flight detectForVideo call finishes.
+        Runnable cleanup = () -> {
+            try {
+                if (landmarker != null) landmarker.close();
+            } catch (Exception ignored) {
+            }
+            landmarker = null;
+            if (rawBitmap != null) {
+                rawBitmap.recycle();
+                rawBitmap = null;
+            }
+            rgba = null;
+            if (thread != null) thread.quitSafely();
+        };
+        boolean posted = false;
+        if (handler != null && thread != null && Looper.myLooper() != thread.getLooper()) {
+            posted = handler.post(cleanup);
+        }
+        if (!posted) cleanup.run();
+        nativeSetHand(0, null, false, 0L);
+        nativeSetHand(1, null, false, 0L);
     }
 }

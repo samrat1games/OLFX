@@ -7,18 +7,40 @@
     <!-- OLFX: camera based hand tracking -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Normal permission that satisfies the Android 14 connectedDevice FGS prerequisite when the
+         camera is not in use (e.g. hand tracking disabled or permission not yet granted). -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application>
+        <activity
+            android:name="org.freedesktop.monado.ipc.HandTestActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
         <activity
             android:name="org.freedesktop.monado.ipc.CameraPermissionActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <service
+            android:name="org.freedesktop.monado.ipc.PinchClickService"
+            android:exported="true"
+            android:label="@string/olfx_pinch_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:process=":monado">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/olfx_pinch_click_service" />
+        </service>
+        <service
             android:name="org.freedesktop.monado.ipc.MonadoService"
             android:enabled="true"
             android:exported="true"
-            android:foregroundServiceType="connectedDevice|mediaPlayback|camera">
+            android:foregroundServiceType="connectedDevice|camera">
 
             <intent-filter>
                 <action android:name="${serviceActionName}" />

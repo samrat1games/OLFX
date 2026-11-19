@@ -43,7 +43,16 @@ struct android_device
 		struct m_imu_3dof fusion;
 		//! Latest accelerometer sample, fed to the fusion on each gyro update.
 		struct xrt_vec3 last_accel;
+		// Recent sensor rotations in CLOCK_MONOTONIC, for delayed camera frames.
+		struct { int64_t timestamp_ns; struct xrt_quat orientation; } history[512];
+		unsigned history_next;
+		unsigned history_count;
 	};
+
+	bool sbs;
+	bool sensors_available;
+	bool have_accel;
+	bool have_gyro;
 
 	enum u_logging_level log_level;
 };

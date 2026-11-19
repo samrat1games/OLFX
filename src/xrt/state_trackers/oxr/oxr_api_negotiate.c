@@ -274,6 +274,9 @@ handle_non_null(struct oxr_instance *inst, struct oxr_logger *log, const char *n
 	ENTRY_IF_EXT(xrCreateHandTrackerEXT, EXT_hand_tracking);
 	ENTRY_IF_EXT(xrDestroyHandTrackerEXT, EXT_hand_tracking);
 	ENTRY_IF_EXT(xrLocateHandJointsEXT, EXT_hand_tracking);
+#ifdef OXR_HAVE_FB_hand_tracking_mesh
+	ENTRY_IF_EXT(xrGetHandMeshFB, FB_hand_tracking_mesh);
+#endif
 #endif
 
 #ifdef OXR_HAVE_MNDX_force_feedback_curl

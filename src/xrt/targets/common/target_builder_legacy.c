@@ -18,6 +18,10 @@
 #include "target_builder_helpers.h"
 #include "target_builder_interface.h"
 
+#ifdef XRT_BUILD_DRIVER_ANDROID
+#include "ht_ctrl_emu/ht_ctrl_emu_interface.h"
+#endif
+
 #include <assert.h>
 
 static const char *driver_list[] = {
@@ -191,6 +195,40 @@ legacy_open_system_impl(struct xrt_builder *xb,
 
 	conforming_left_ht = u_system_devices_get_ht_device_conforming_left(xsysd);
 	conforming_right_ht = u_system_devices_get_ht_device_conforming_right(xsysd);
+
+#ifdef XRT_BUILD_DRIVER_ANDROID
+	/*
+	 * OLFX camera hands: controller-only OpenXR titles (including Quest titles that suggest the Oculus
+	 * Touch profile) still need left/right interaction devices. Wrap the shared hand tracker in one
+	 * XR_EXT_hand_interaction device per hand and rebind Touch/simple/generic controller actions to it.
+	 * The wrappers do not own the source tracker, which remains in static_xdevs.
+	 */
+	if (head != NULL &&
+	    (left == NULL || left->device_type == XRT_DEVICE_TYPE_HAND_TRACKER) &&
+	    (right == NULL || right->device_type == XRT_DEVICE_TYPE_HAND_TRACKER)) {
+		struct xrt_device *hands = unobstructed_left_ht;
+		if (hands == NULL) hands = unobstructed_right_ht;
+		if (hands == NULL) hands = conforming_left_ht;
+		if (hands == NULL) hands = conforming_right_ht;
+		if (hands != NULL && xsysd->static_xdev_count + 2 <= ARRAY_SIZE(xsysd->static_xdevs)) {
+			struct xrt_device *interaction[2] = {NULL, NULL};
+			if (cemu_devices_create_ext_hand_interaction(head, hands, interaction) == 2) {
+				xsysd->static_xdevs[xsysd->static_xdev_count++] = interaction[0];
+				xsysd->static_xdevs[xsysd->static_xdev_count++] = interaction[1];
+				left = interaction[0];
+				right = interaction[1];
+				unobstructed_left_ht = interaction[0];
+				unobstructed_right_ht = interaction[1];
+				/* Camera hands are UNOBSTRUCTED data. The EXT wrappers expose no
+				 * HT_CONFORMING inputs, so advertising them as controller-derived
+				 * conforming sources would make xrLocateHandJointsEXT report a
+				 * controller data source that is not actually present. */
+				conforming_left_ht = NULL;
+				conforming_right_ht = NULL;
+			}
+		}
+	}
+#endif
 
 	// Assign to role(s).
 	tbo->head = head;

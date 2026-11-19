@@ -10,6 +10,7 @@
 package org.freedesktop.monado.ipc;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.provider.Settings;
@@ -40,37 +41,78 @@ public class MonadoImpl extends IMonado.Stub {
     }
 
     private final Context context;
+    private final boolean activeSbs;
 
     public MonadoImpl(@NonNull Context context) {
         this.context = context.getApplicationContext();
-        applyOlfxProfile(this.context);
+        this.activeSbs = applyOlfxProfile(this.context);
         nativeStartServer(this.context);
     }
 
-    /**
-     * OLFX: ask the OLFX launcher (runtime broker provider) which render scale the game that is
-     * about to run should get, and hand it to the compositor through its environment option.
-     */
-    private static void applyOlfxProfile(Context ctx) {
+    /** Read private launcher settings before starting a native runtime in this process. */
+    private static boolean applyOlfxProfile(Context ctx) {
+        String authority = "content://" + ctx.getPackageName() + ".settings";
+        int scale = 80;
+        boolean sbs = false;
+        String gamePackage = "";
         try (android.database.Cursor c =
                 ctx.getContentResolver()
-                        .query(
-                                android.net.Uri.parse(
-                                        "content://org.khronos.openxr.runtime_broker/olfx/profile/current"),
-                                null,
-                                null,
-                                null,
-                                null)) {
+                        .query(android.net.Uri.parse(authority + "/olfx/profile/current"), null, null, null, null)) {
             if (c != null && c.moveToFirst()) {
-                int scale = c.getInt(c.getColumnIndexOrThrow("scale"));
-                if (scale >= 25 && scale <= 200) {
-                    android.system.Os.setenv("XRT_COMPOSITOR_SCALE_PERCENTAGE", Integer.toString(scale), true);
-                    Log.i(TAG, "OLFX profile: compositor scale " + scale + "%");
-                }
+                int value = c.getInt(c.getColumnIndexOrThrow("scale"));
+                if (value >= 50 && value <= 150) scale = value;
             }
-        } catch (Exception e) {
-            Log.w(TAG, "OLFX profile unavailable: " + e);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "OLFX render settings unavailable; using defaults", e);
         }
+        try (android.database.Cursor c =
+                ctx.getContentResolver()
+                        .query(android.net.Uri.parse(authority + "/olfx/display"), null, null, null, null)) {
+            if (c != null && c.moveToFirst()) sbs = c.getInt(c.getColumnIndexOrThrow("sbs")) == 1;
+        } catch (RuntimeException e) {
+            Log.w(TAG, "OLFX display settings unavailable; using lens distortion", e);
+        }
+        gamePackage = currentGamePackage(ctx);
+        try {
+            android.system.Os.setenv("XRT_COMPOSITOR_SCALE_PERCENTAGE", Integer.toString(scale), true);
+            android.system.Os.setenv("XRT_COMPOSITOR_SBS", sbs ? "1" : "0", true);
+            // VRMobile: stable vsync-paced presentation; bounded swapchain; no GPU-contending hand benchmark.
+            android.system.Os.setenv("XRT_COMPOSITOR_PRESENT_MODE", "fifo", true);
+            android.system.Os.setenv("XRT_COMPOSITOR_PREFERRED_IMAGE_COUNT", "2", true);
+            android.system.Os.setenv("OLFX_GAME_PACKAGE", gamePackage == null ? "" : gamePackage, true);
+        } catch (Exception e) {
+            Log.e(TAG, "Could not apply OLFX display settings", e);
+        }
+        return sbs;
+    }
+
+    private static String currentGamePackage(Context ctx) {
+        String authority = "content://" + ctx.getPackageName() + ".settings";
+        try (android.database.Cursor c =
+                ctx.getContentResolver()
+                        .query(android.net.Uri.parse(authority + "/olfx/game/current"), null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String pkg = c.getString(c.getColumnIndexOrThrow("package"));
+                return pkg == null ? "" : pkg;
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "OLFX current game unavailable; SBS badge disabled", e);
+        }
+        return "";
+    }
+
+    @Override
+    public Bundle getOlfxDisplayConfig() {
+        // Called by client-hosted MonadoView surfaces, where service-process env vars are not visible.
+        String gamePackage = currentGamePackage(context);
+        try {
+            android.system.Os.setenv("OLFX_GAME_PACKAGE", gamePackage, true);
+        } catch (Exception ignored) {
+        }
+        Bundle config = new Bundle();
+        config.putBoolean("sbs", activeSbs);
+        config.putString("gamePackage", gamePackage);
+        return config;
     }
 
     @Override

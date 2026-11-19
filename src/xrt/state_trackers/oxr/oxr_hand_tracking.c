@@ -178,6 +178,124 @@ oxr_hand_tracker_create(struct oxr_logger *log,
 	return XR_SUCCESS;
 }
 
+
+/*
+ * Meta/Oculus OpenXR hand extensions. These are output chains on xrLocateHandJointsEXT;
+ * they let OculusXR/OpenXR Unity titles read aim/pinch and collision capsules from the
+ * same camera joints instead of requiring a proprietary VrApi hand source.
+ */
+#ifdef OXR_HAVE_FB_hand_tracking_aim
+static float
+olfx_distance(XrVector3f a, XrVector3f b)
+{
+	float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+	return sqrtf(dx * dx + dy * dy + dz * dz);
+}
+
+static float
+olfx_clamp01(float v)
+{
+	return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+static void
+olfx_fill_aim_state(XrHandTrackingAimStateFB *aim, const XrHandJointLocationsEXT *locations)
+{
+	const XrHandJointLocationEXT *j = locations->jointLocations;
+	aim->status = XR_HAND_TRACKING_AIM_COMPUTED_BIT_FB | XR_HAND_TRACKING_AIM_VALID_BIT_FB;
+	// Conservative aim fallback: the tracked wrist frame. Games that need a calibrated
+	// pointer ray should use XR_EXT_palm_pose / their own interaction profile.
+	aim->aimPose = j[XR_HAND_JOINT_WRIST_EXT].pose;
+	float palm = olfx_distance(j[XR_HAND_JOINT_WRIST_EXT].pose.position,
+	                           j[XR_HAND_JOINT_MIDDLE_METACARPAL_EXT].pose.position);
+	if (!(palm > 1e-4f) || !isfinite(palm)) {
+		palm = 0.08f;
+	}
+	const XrHandJointEXT tips[4] = {XR_HAND_JOINT_INDEX_TIP_EXT, XR_HAND_JOINT_MIDDLE_TIP_EXT,
+	                                XR_HAND_JOINT_RING_TIP_EXT, XR_HAND_JOINT_LITTLE_TIP_EXT};
+	float *strengths[4] = {&aim->pinchStrengthIndex, &aim->pinchStrengthMiddle,
+	                       &aim->pinchStrengthRing, &aim->pinchStrengthLittle};
+	const XrHandTrackingAimFlagsFB bits[4] = {
+	    XR_HAND_TRACKING_AIM_INDEX_PINCHING_BIT_FB, XR_HAND_TRACKING_AIM_MIDDLE_PINCHING_BIT_FB,
+	    XR_HAND_TRACKING_AIM_RING_PINCHING_BIT_FB, XR_HAND_TRACKING_AIM_LITTLE_PINCHING_BIT_FB};
+	for (int i = 0; i < 4; i++) {
+		float ratio = olfx_distance(j[XR_HAND_JOINT_THUMB_TIP_EXT].pose.position,
+		                            j[tips[i]].pose.position) / palm;
+		*strengths[i] = olfx_clamp01((0.46f - ratio) / 0.16f);
+		if (ratio <= 0.30f) {
+			aim->status |= bits[i];
+		}
+	}
+	// OLFX does not emulate Meta system gestures or claim a dominant hand.
+}
+
+static void
+olfx_clear_aim_state(XrHandTrackingAimStateFB *aim)
+{
+	aim->status = 0;
+	aim->aimPose.orientation = (XrQuaternionf){0.0f, 0.0f, 0.0f, 1.0f};
+	aim->aimPose.position = (XrVector3f){0.0f, 0.0f, 0.0f};
+	aim->pinchStrengthIndex = 0.0f;
+	aim->pinchStrengthMiddle = 0.0f;
+	aim->pinchStrengthRing = 0.0f;
+	aim->pinchStrengthLittle = 0.0f;
+}
+#endif
+
+#ifdef OXR_HAVE_FB_hand_tracking_capsules
+static void
+olfx_fill_capsules(XrHandTrackingCapsulesStateFB *caps, const XrHandJointLocationsEXT *locations)
+{
+	// 19 inscribed capsules: palm spans plus the skinnable finger segments. Endpoints are
+	// inset by the radius so the rounded caps stay close to the tracked joint volumes.
+	static const struct {
+		XrHandJointEXT a, b, joint;
+	} segments[XR_HAND_TRACKING_CAPSULE_COUNT_FB] = {
+	    {XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_INDEX_METACARPAL_EXT, XR_HAND_JOINT_INDEX_METACARPAL_EXT},
+	    {XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_LITTLE_METACARPAL_EXT, XR_HAND_JOINT_LITTLE_METACARPAL_EXT},
+	    {XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_MIDDLE_METACARPAL_EXT, XR_HAND_JOINT_MIDDLE_METACARPAL_EXT},
+	    {XR_HAND_JOINT_THUMB_METACARPAL_EXT, XR_HAND_JOINT_THUMB_PROXIMAL_EXT, XR_HAND_JOINT_THUMB_PROXIMAL_EXT},
+	    {XR_HAND_JOINT_THUMB_PROXIMAL_EXT, XR_HAND_JOINT_THUMB_DISTAL_EXT, XR_HAND_JOINT_THUMB_DISTAL_EXT},
+	    {XR_HAND_JOINT_THUMB_DISTAL_EXT, XR_HAND_JOINT_THUMB_TIP_EXT, XR_HAND_JOINT_THUMB_TIP_EXT},
+	    {XR_HAND_JOINT_INDEX_PROXIMAL_EXT, XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT, XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT},
+	    {XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT, XR_HAND_JOINT_INDEX_DISTAL_EXT, XR_HAND_JOINT_INDEX_DISTAL_EXT},
+	    {XR_HAND_JOINT_INDEX_DISTAL_EXT, XR_HAND_JOINT_INDEX_TIP_EXT, XR_HAND_JOINT_INDEX_TIP_EXT},
+	    {XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT, XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT, XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT},
+	    {XR_HAND_JOINT_MIDDLE_INTERMEDIATE_EXT, XR_HAND_JOINT_MIDDLE_DISTAL_EXT, XR_HAND_JOINT_MIDDLE_DISTAL_EXT},
+	    {XR_HAND_JOINT_MIDDLE_DISTAL_EXT, XR_HAND_JOINT_MIDDLE_TIP_EXT, XR_HAND_JOINT_MIDDLE_TIP_EXT},
+	    {XR_HAND_JOINT_RING_PROXIMAL_EXT, XR_HAND_JOINT_RING_INTERMEDIATE_EXT, XR_HAND_JOINT_RING_INTERMEDIATE_EXT},
+	    {XR_HAND_JOINT_RING_INTERMEDIATE_EXT, XR_HAND_JOINT_RING_DISTAL_EXT, XR_HAND_JOINT_RING_DISTAL_EXT},
+	    {XR_HAND_JOINT_RING_DISTAL_EXT, XR_HAND_JOINT_RING_TIP_EXT, XR_HAND_JOINT_RING_TIP_EXT},
+	    {XR_HAND_JOINT_LITTLE_METACARPAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT},
+	    {XR_HAND_JOINT_LITTLE_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT, XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT},
+	    {XR_HAND_JOINT_LITTLE_INTERMEDIATE_EXT, XR_HAND_JOINT_LITTLE_DISTAL_EXT, XR_HAND_JOINT_LITTLE_DISTAL_EXT},
+	    {XR_HAND_JOINT_LITTLE_DISTAL_EXT, XR_HAND_JOINT_LITTLE_TIP_EXT, XR_HAND_JOINT_LITTLE_TIP_EXT},
+	};
+	const XrHandJointLocationEXT *j = locations->jointLocations;
+	for (uint32_t i = 0; i < XR_HAND_TRACKING_CAPSULE_COUNT_FB; i++) {
+		XrHandCapsuleFB *c = &caps->capsules[i];
+		XrVector3f a = j[segments[i].a].pose.position;
+		XrVector3f b = j[segments[i].b].pose.position;
+		float radius = 0.5f * (j[segments[i].a].radius + j[segments[i].b].radius);
+		if (!(radius > 0.0f) || !isfinite(radius)) {
+			radius = 0.008f;
+		}
+		float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+		float len = sqrtf(dx * dx + dy * dy + dz * dz);
+		c->joint = segments[i].joint;
+		c->radius = radius;
+		if (len > 2.0f * radius && isfinite(len)) {
+			float t = radius / len;
+			c->points[0] = (XrVector3f){a.x + dx * t, a.y + dy * t, a.z + dz * t};
+			c->points[1] = (XrVector3f){b.x - dx * t, b.y - dy * t, b.z - dz * t};
+		} else {
+			c->points[0] = (XrVector3f){0.5f * (a.x + b.x), 0.5f * (a.y + b.y), 0.5f * (a.z + b.z)};
+			c->points[1] = c->points[0];
+		}
+	}
+}
+#endif
+
 XrResult
 oxr_hand_tracker_joints(struct oxr_logger *log,
                         struct oxr_hand_tracker *hand_tracker,
@@ -193,6 +311,14 @@ oxr_hand_tracker_joints(struct oxr_logger *log,
 
 	XrHandJointVelocitiesEXT *vel =
 	    OXR_GET_OUTPUT_FROM_CHAIN(locations, XR_TYPE_HAND_JOINT_VELOCITIES_EXT, XrHandJointVelocitiesEXT);
+#ifdef OXR_HAVE_FB_hand_tracking_aim
+	XrHandTrackingAimStateFB *aim =
+	    OXR_GET_OUTPUT_FROM_CHAIN(locations, XR_TYPE_HAND_TRACKING_AIM_STATE_FB, XrHandTrackingAimStateFB);
+#endif
+#ifdef OXR_HAVE_FB_hand_tracking_capsules
+	XrHandTrackingCapsulesStateFB *capsules =
+	    OXR_GET_OUTPUT_FROM_CHAIN(locations, XR_TYPE_HAND_TRACKING_CAPSULES_STATE_FB, XrHandTrackingCapsulesStateFB);
+#endif
 
 #ifdef OXR_HAVE_EXT_hand_tracking_data_source
 	XrHandTrackingDataSourceStateEXT *data_source_state = NULL;
@@ -262,6 +388,18 @@ oxr_hand_tracker_joints(struct oxr_logger *log,
 		}
 	}
 
+
+#ifdef OXR_HAVE_FB_hand_tracking_aim
+	if (aim != NULL) {
+		olfx_fill_aim_state(aim, locations);
+	}
+#endif
+#ifdef OXR_HAVE_FB_hand_tracking_capsules
+	if (capsules != NULL) {
+		olfx_fill_capsules(capsules, locations);
+	}
+#endif
+
 	return ret;
 
 hand_tracking_inactive:
@@ -273,13 +411,29 @@ hand_tracking_inactive:
 	}
 #endif
 
-	// Loop over all joints and zero flags.
+	// Do not leave the previous frame's poses/radii/velocities visible to the game when inactive.
 	for (uint32_t i = 0; i < locations->jointCount; i++) {
 		locations->jointLocations[i].locationFlags = XRT_SPACE_RELATION_BITMASK_NONE;
+		locations->jointLocations[i].pose.orientation = (XrQuaternionf){0.0f, 0.0f, 0.0f, 1.0f};
+		locations->jointLocations[i].pose.position = (XrVector3f){0.0f, 0.0f, 0.0f};
+		locations->jointLocations[i].radius = 0.0f;
 		if (vel) {
 			vel->jointVelocities[i].velocityFlags = XRT_SPACE_RELATION_BITMASK_NONE;
+			vel->jointVelocities[i].linearVelocity = (XrVector3f){0.0f, 0.0f, 0.0f};
+			vel->jointVelocities[i].angularVelocity = (XrVector3f){0.0f, 0.0f, 0.0f};
 		}
 	}
+
+#ifdef OXR_HAVE_FB_hand_tracking_aim
+	if (aim != NULL) {
+		olfx_clear_aim_state(aim);
+	}
+#endif
+#ifdef OXR_HAVE_FB_hand_tracking_capsules
+	if (capsules != NULL) {
+		memset(capsules->capsules, 0, sizeof(capsules->capsules));
+	}
+#endif
 
 	return ret;
 }

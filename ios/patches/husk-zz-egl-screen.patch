@@ -1,0 +1,62 @@
+diff --git a/src/translation-layer-next/husk-tl-egl.c b/src/translation-layer-next/husk-tl-egl.c
+index ced2e06..998034b 100644
+--- a/src/translation-layer-next/husk-tl-egl.c
++++ b/src/translation-layer-next/husk-tl-egl.c
+@@ -347,6 +347,57 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
+     tl_log_line("egl: window surface %p on layer %p (%dx%d), eglGetError %#x", s, layer, tl_nwindow_width(win), tl_nwindow_height(win), a_eglGetError());
+     return s;
+ }
++/* OLFX: the phone's screen for OLFX's OpenXR compositor. A Unity game that believes it runs on a headset renders into XR swapchain
++ * textures and never makes a window surface of its own, so the compositor makes one on the app's game layer, draws both eyes there
++ * and swaps it itself (begin/end bracket the drawing; the game's own surfaces are put back afterwards). */
++void *tl_nwindow_get(void);
++static EGLSurface g_scr_surf;
++static __thread struct { EGLDisplay d; EGLSurface dr, rd; EGLContext c; } t_scr_prev;
++int tl_egl_screen_begin(int *w, int *h)
++{
++    if (!E.ready) return 0;
++    EGLDisplay d = a_eglGetCurrentDisplay();
++    EGLContext c = a_eglGetCurrentContext();
++    if (!d || !c) return 0;
++    if (!g_scr_surf) {
++        static int tried;
++        EGLBoolean (*qctx)(EGLDisplay, EGLContext, EGLint, EGLint *) = a_eglGetProcAddress ? (void *)a_eglGetProcAddress("eglQueryContext") : NULL;
++        void *win = tl_nwindow_get();
++        void *layer = tl_nwindow_native(win);
++        if (!layer) { if (!tried++) tl_log_line("egl: screen surface: no game layer yet"); return 0; }
++        EGLConfig cfg = NULL; EGLint n = 0, id = 0;
++        if (qctx && qctx(d, c, 0x3028 /* EGL_CONFIG_ID */, &id)) {
++            EGLint at[] = { 0x3028, id, EGL_NONE };
++            if (!a_eglChooseConfig(d, at, &cfg, 1, &n) || n < 1) cfg = NULL;
++        }
++        if (cfg) g_scr_surf = a_eglCreateWindowSurface(d, cfg, layer, NULL);
++        if (!g_scr_surf) {
++            EGLint at[] = { 0x3033 /* SURFACE_TYPE */, 0x4 /* WINDOW_BIT */, 0x3040 /* RENDERABLE_TYPE */, 0x40 /* ES3 */,
++                            0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, EGL_NONE };
++            n = 0; cfg = NULL;
++            if (a_eglChooseConfig(d, at, &cfg, 1, &n) && n >= 1) g_scr_surf = a_eglCreateWindowSurface(d, cfg, layer, NULL);
++        }
++        tl_log_line("egl: screen surface %p on layer %p (context config %d), eglGetError %#x", g_scr_surf, layer, id, a_eglGetError());
++        if (!g_scr_surf) return 0;
++    }
++    t_scr_prev.d = d; t_scr_prev.c = c;
++    t_scr_prev.dr = a_eglGetCurrentSurface(0x3059 /* EGL_DRAW */); t_scr_prev.rd = a_eglGetCurrentSurface(0x305A /* EGL_READ */);
++    if (!a_eglMakeCurrent(d, g_scr_surf, g_scr_surf, c)) {
++        static int bad; if (!bad++) tl_log_line("egl: screen surface cannot be made current: eglGetError %#x", a_eglGetError());
++        return 0;
++    }
++    EGLint W = 0, H = 0;
++    a_eglQuerySurface(d, g_scr_surf, EGL_WIDTH, &W); a_eglQuerySurface(d, g_scr_surf, EGL_HEIGHT, &H);
++    *w = W; *h = H;
++    return 1;
++}
++int tl_egl_screen_end(void)
++{
++    if (!g_scr_surf || !t_scr_prev.d) return 0;
++    EGLBoolean swapped = a_eglSwapBuffers(t_scr_prev.d, g_scr_surf);
++    a_eglMakeCurrent(t_scr_prev.d, t_scr_prev.dr, t_scr_prev.rd, t_scr_prev.c);
++    return swapped;
++}
+ static EGLBoolean w_eglDestroySurface(EGLDisplay d, EGLSurface s)
+ {
+     pthread_mutex_lock(&g_tex_lock);

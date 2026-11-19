@@ -21,6 +21,14 @@ extern "C" {
 #endif
 
 
+/*!
+ * Identity UV mapping for side-by-side output without headset lenses.
+ * The compositor still renders two separate stereo views; no screen capture or extra copy is needed.
+ */
+void
+u_compute_distortion_identity(float u, float v, struct xrt_uv_triplet *result);
+
+
 /*
  *
  * Panotools distortion

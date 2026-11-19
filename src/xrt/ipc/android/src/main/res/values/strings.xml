@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="olfx_pinch_service_label">OLFX pinch click</string>
+    <string name="olfx_pinch_service_description">Lets OLFX turn a hand-tracking pinch (thumb + index) into a screen tap. Enable only if you want pinch clicks. OLFX does not read screen content.</string>
+</resources>

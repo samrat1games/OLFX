@@ -1,0 +1,19 @@
+diff --git a/src/translation-layer-next/husk-tl-jni-hle.c b/src/translation-layer-next/husk-tl-jni-hle.c
+--- a/src/translation-layer-next/husk-tl-jni-hle.c
++++ b/src/translation-layer-next/husk-tl-jni-hle.c
+@@ -126,6 +126,7 @@
+ static void Context_getPackageName(tl_jcall *c) { c->ret = vl(STR(H.pkg)); }
+ static void Context_getPackageCodePath(tl_jcall *c) { c->ret = vl(STR(H.apk)); }
+ static void Context_getPackageResourcePath(tl_jcall *c) { c->ret = vl(STR(H.apk)); }
++static void Context_getDataDir(tl_jcall *c) { c->ret = vl(new_file(H.data)); }
+ static void Context_getFilesDir(tl_jcall *c) { c->ret = vl(new_file(H.files)); }
+ static void Context_getCacheDir(tl_jcall *c) { c->ret = vl(new_file(H.cache)); }
+ static void Context_getCodeCacheDir(tl_jcall *c) { char p[700]; snprintf(p, sizeof(p), "%s/code_cache", H.data); mkdirs(p); c->ret = vl(new_file(p)); }
+@@ -1249,6 +1250,7 @@
+     M("android/content/Context", "getPackageName", "()Ljava/lang/String;", Context_getPackageName),
+     M("android/content/Context", "getPackageCodePath", "()Ljava/lang/String;", Context_getPackageCodePath),
+     M("android/content/Context", "getPackageResourcePath", "()Ljava/lang/String;", Context_getPackageResourcePath),
++    M("android/content/Context", "getDataDir", "()Ljava/io/File;", Context_getDataDir),
+     M("android/content/Context", "getFilesDir", "()Ljava/io/File;", Context_getFilesDir),
+     M("android/content/Context", "getCacheDir", "()Ljava/io/File;", Context_getCacheDir),
+     M("android/content/Context", "getCodeCacheDir", "()Ljava/io/File;", Context_getCodeCacheDir),

@@ -126,6 +126,14 @@ run_func(struct xrt_device *xdev, func_calc calc, struct xrt_hmd_parts *target, 
 }
 
 void
+u_compute_distortion_identity(float u, float v, struct xrt_uv_triplet *result)
+{
+	result->r = (struct xrt_vec2){u, v};
+	result->g = (struct xrt_vec2){u, v};
+	result->b = (struct xrt_vec2){u, v};
+}
+
+void
 u_compute_distortion_vive(struct u_vive_values *values, float u, float v, struct xrt_uv_triplet *result)
 {
 	// Reading the whole struct like this gives the compiler more opportunity to optimize.

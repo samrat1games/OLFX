@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import com.android.apksig.ApkSigner
+import org.freedesktop.monado.openxr_runtime.R
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FilterOutputStream
@@ -21,7 +22,7 @@ import java.util.zip.ZipOutputStream
 /**
  * On-device APK patcher for Quest/Pico VR games (Unity, Unreal, native OpenXR).
  *
- * Copies the installed APK, rewrites `assets/bin/Data/boot.config` with performance / memory options,
+ * Copies the installed APK, optionally rewrites Unity `boot.config` with performance / memory options,
  * drops unused ABIs, re-aligns native libraries (16 KB) and signs the result (v1+v2) with a key kept in
  * the Android Keystore. The result can only be installed after the original is uninstalled (the signature
  * changes), see [DetailActivity].
@@ -34,7 +35,7 @@ object ApkPatcher {
 
     private val QUERY_PACKAGES = listOf(
         "org.olfx.launcher",
-        // NOT com.oculus.systemdriver: Meta's loader would then prefer that package over the OpenXR broker
+        "com.oculus.systemdriver",
     )
     private val QUERY_ACTIONS = listOf(
         "org.khronos.openxr.OpenXRRuntimeService",
@@ -44,9 +45,12 @@ object ApkPatcher {
     /** boot.config overrides per mode. All of these are options the Unity player reads from boot.config. */
     private fun overrides(mode: String): LinkedHashMap<String, String> {
         val m = LinkedHashMap<String, String>()
+        // Device-aware worker count: forcing a fixed value can oversubscribe little cores or leave
+        // big cores idle. Unity ignores unknown keys, but a sane value avoids pathological scheduling.
+        val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
         when (mode) {
             Profiles.OPT -> {
-                m["job-worker-count"] = "3"
+                m["job-worker-count"] = when { cores <= 4 -> 1; cores <= 6 -> 2; else -> 3 }.toString()
                 m["gc-max-time-slice"] = "2"
                 // smaller allocator blocks: less reserved memory on a RAM-starved device
                 m["memorysetup-main-allocator-block-size"] = "8388608"
@@ -62,7 +66,7 @@ object ApkPatcher {
                 m["memorysetup-temp-allocator-size-background-worker"] = "32768"
             }
             else -> {
-                m["job-worker-count"] = "5"
+                m["job-worker-count"] = (cores - 1).coerceIn(1, 5).toString()
                 m["gc-max-time-slice"] = "3"
                 m["memorysetup-main-allocator-block-size"] = "16777216"
                 m["memorysetup-gfx-main-allocator-block-size"] = "16777216"
@@ -103,9 +107,9 @@ object ApkPatcher {
         val ai = try {
             pm.getApplicationInfo(pkg, 0)
         } catch (e: PackageManager.NameNotFoundException) {
-            throw PatchException("Игра не установлена")
+            throw PatchException(ctx.getString(R.string.game_not_installed))
         }
-        if (!ai.splitSourceDirs.isNullOrEmpty()) throw PatchException("Игра из нескольких APK (split) — пока не поддерживается")
+        if (!ai.splitSourceDirs.isNullOrEmpty()) throw PatchException(ctx.getString(R.string.split_apk_unsupported))
         return patchFile(ctx, File(ai.sourceDir), pkg, ai.minSdkVersion, mode, progress)
     }
 
@@ -114,18 +118,50 @@ object ApkPatcher {
         val minSdk = minSdkVersion.coerceAtLeast(21)
         val out = outFile(ctx, pkg)
         val unsigned = File(out.parentFile, "$pkg.unsigned.apk")
+        // Preflight free space before touching the installed app (frameloader-style bounded install).
+        val free = android.os.StatFs(out.parentFile!!.absolutePath).availableBytes
+        val need = src.length() * 3 + 256L * 1024 * 1024
+        if (free < need) throw PatchException(ctx.getString(R.string.patch_no_space))
 
-        progress("Правка APK…")
-        // Oculus XR plugin games: wrap libOVRPlugin.so with a forwarding shim (traces calls, can override them).
-        val ovrShim = try { ctx.assets.open("ovr/libOVRPlugin_shim_arm64.so").use { it.readBytes() } } catch (e: Exception) { null }
+        progress(ctx.getString(R.string.patching_apk))
         val khronos = try { ctx.assets.open("khronos/libopenxr_loader_arm64.so").use { it.readBytes() } } catch (e: Exception) { null }
+        // Respect the per-game runtime choice. Preserving Meta's loader just because OculusXR is installed
+        // would keep a Monado-selected Quest title on the proprietary path where OLFX camera hands cannot
+        // be injected. Only keep the Meta loader/plugin when this game actually resolves to OculusXR.
+        val compat = RuntimeChoice.normalize(Prefs(ctx).appRuntime(pkg)) == RuntimeChoice.OPENXR_COMPAT
+        val preferOculus = !compat && Runtimes.resolve(ctx, pkg)?.kind == Kind.OCULUS
+        val shim = if (compat) {
+            val f = File(ctx.applicationInfo.nativeLibraryDir ?: "", "libOVRPlugin.so")
+            if (!f.isFile) throw PatchException(ctx.getString(R.string.openxr_compat_missing))
+            try { f.readBytes() } catch (e: Exception) { throw PatchException(ctx.getString(R.string.openxr_compat_missing)) }
+        } else null
+        val hasMetaLoader = try {
+            ZipFile(src).use { z ->
+                z.getEntry("lib/arm64-v8a/libopenxr_loader.so")?.let {
+                    String(z.getInputStream(it).readBytes(), Charsets.ISO_8859_1).contains("com.oculus.systemdriver")
+                } ?: false
+            }
+        } catch (e: Exception) { false }
+        val loaderMode = when {
+            compat -> ApkPatch.LOADER_KHRONOS
+            preferOculus -> ApkPatch.LOADER_META
+            AppScanner.entry(ctx, pkg, false)?.quest == true || hasMetaLoader -> ApkPatch.LOADER_KHRONOS
+            else -> ApkPatch.LOADER_STANDARD
+        }
+        // Compatibility mode provides local initialization and entitlement responses; it does not verify ownership.
+        // The original loader is retained as *_real.so for the generated non-platform exports.
+        val platformGuard = if (compat) {
+            try { ctx.assets.open("ovr/libovrplatformloader_guard_arm64.so").use { it.readBytes() } } catch (e: Exception) { null }
+        } else null
+        // Gear VR / Quest games on VrApi: their libvrapi.so only finds Oculus' system driver; the adapter draws through OpenXR instead
+        val vrapiShim = if (preferOculus) null else try { ctx.assets.open("vrapi/libvrapi_shim_arm64.so").use { it.readBytes() } } catch (e: Exception) { null }
         try {
-            rewrite(src, unsigned, mode, khronos, ovrShim)
+            rewrite(src, unsigned, mode, khronos, preferOculus, compat, shim, loaderMode, ctx, vrapiShim, platformGuard)
         } catch (e: PatchException) {
             unsigned.delete(); throw e
         }
 
-        progress("Подпись…")
+        progress(ctx.getString(R.string.signing_apk))
         try {
             sign(unsigned, out, minSdk)
         } finally {
@@ -134,17 +170,31 @@ object ApkPatcher {
         return out
     }
 
+    private const val PLATFORM_LOADER = "lib/arm64-v8a/libovrplatformloader.so"
+    private const val PLATFORM_LOADER_REAL = "lib/arm64-v8a/libovrplatformloader_real.so"
+
     private class Counting(out: OutputStream) : FilterOutputStream(out) {
         var count = 0L
         override fun write(b: Int) { out.write(b); count++ }
         override fun write(b: ByteArray, off: Int, len: Int) { out.write(b, off, len); count += len }
     }
 
-    private fun rewrite(src: File, dst: File, mode: String, khronosLoader: ByteArray?, ovrShim: ByteArray?) {
+    private fun rewrite(src: File, dst: File, mode: String, khronosLoader: ByteArray?, preferOculus: Boolean,
+                        compat: Boolean, shim: ByteArray?, loaderMode: String, ctx: Context, vrapiShim: ByteArray? = null,
+                        platformGuard: ByteArray? = null) {
         var patched = false
         ZipFile(src).use { zin ->
             val names = zin.entries().asSequence().map { it.name }.toSet()
             val hasArm64 = names.any { it.startsWith("lib/arm64-v8a/") }
+            val hookConfig = zin.getEntry("lib/arm64-v8a/libfrda.config.so")?.let {
+                String(zin.getInputStream(it).readBytes(), Charsets.UTF_8)
+            }.orEmpty()
+            val optionalHook = if (compat && hookConfig.contains("libscript.so") && hookConfig.contains("patch_ovrplatformloader")) {
+                ctx.assets.open("ovr/liboptional_hook_arm64.so").use { it.readBytes() }
+            } else null
+
+            var wroteLoader = false
+            var wrotePlugin = false
             Counting(dst.outputStream().buffered(1 shl 16)).use { counting ->
                 ZipOutputStream(counting).use { zout ->
                     for (e in zin.entries()) {
@@ -156,66 +206,99 @@ object ApkPatcher {
                         if (hasArm64 && (n.startsWith("lib/armeabi") || n.startsWith("lib/x86"))) continue
 
                         val hasReal = "lib/arm64-v8a/libOVRPlugin_real.so" in names
-                        // first patch: the original becomes *_real; re-patch: only the shim itself is refreshed
-                        val outName = if (n == "lib/arm64-v8a/libOVRPlugin.so" && ovrShim != null && !hasReal) "lib/arm64-v8a/libOVRPlugin_real.so" else n
+                        // Experimental compatibility replaces OVRPlugin with the OpenXR-backed shim.
+                        // Otherwise keep/restore Meta's original plugin (OculusXR passthrough).
+                        if (compat && n == "lib/arm64-v8a/libOVRPlugin_real.so") continue
+                        if (!compat && n == "lib/arm64-v8a/libOVRPlugin.so" && hasReal) continue
+                        val outName = if (!compat && n == "lib/arm64-v8a/libOVRPlugin_real.so") "lib/arm64-v8a/libOVRPlugin.so" else n
+                        // Platform guard (see platformGuard): the original loader moves to *_real.so, the guard takes its name.
+                        val hasLoaderReal = PLATFORM_LOADER_REAL in names
+                        if (!compat && n == PLATFORM_LOADER && hasLoaderReal) continue // drop a previously installed guard
+                        val loaderOutName = if (!compat && n == PLATFORM_LOADER_REAL) PLATFORM_LOADER else outName
+                        // Writes one entry; keeps STORED/aligned layout of the source entry (native libs must stay mmap-able).
+                        fun emit(entryName: String, data: ByteArray?) {
+                            // resources.arsc must be stored uncompressed and 4-byte aligned for apps targeting Android 11+
+                            val stored = e.method == ZipEntry.STORED || n == "resources.arsc"
+                            val ne = ZipEntry(entryName)
+                            ne.time = e.time
+                            if (stored) {
+                                ne.method = ZipEntry.STORED
+                                if (data != null) {
+                                    val crc = CRC32().also { it.update(data) }
+                                    ne.size = data.size.toLong(); ne.compressedSize = data.size.toLong(); ne.crc = crc.value
+                                } else {
+                                    ne.size = e.size; ne.compressedSize = e.size; ne.crc = e.crc
+                                }
+                                val align = if (n.endsWith(".so")) 16384 else 4
+                                ne.extra = alignExtra(counting.count, entryName, align)
+                            } else {
+                                ne.method = ZipEntry.DEFLATED
+                            }
+                            zout.putNextEntry(ne)
+                            if (data != null) zout.write(data) else zin.getInputStream(e).use { it.copyTo(zout, 1 shl 16) }
+                            zout.closeEntry()
+                        }
+                        if (platformGuard != null && n == PLATFORM_LOADER && !hasLoaderReal) emit(PLATFORM_LOADER_REAL, null)
+                        if (optionalHook != null && n == "lib/arm64-v8a/libfrda.so" &&
+                            "assets/olfx-backup/libfrda.so" !in names) emit("assets/olfx-backup/libfrda.so", null)
                         val isBoot = n == BOOT_CONFIG
                         var data: ByteArray? = null
-                        if (n == "lib/arm64-v8a/libOVRPlugin.so" && ovrShim != null && hasReal) {
-                            data = ovrShim
-                        } else if (isBoot) {
+                        if (isBoot) {
                             data = patchBootConfig(zin.getInputStream(e).readBytes(), mode)
                             patched = true
+                        } else if (compat && Regex("classes[0-9]*\\.dex").matches(n)) {
+                            data = DexCompat.patch(zin.getInputStream(e).readBytes())
+                        } else if (n == "lib/arm64-v8a/libfrda.so" && optionalHook != null) {
+                            data = optionalHook
+                        } else if (n == PLATFORM_LOADER && platformGuard != null) {
+                            data = platformGuard
+                        } else if (n == "lib/arm64-v8a/libvrapi.so" && vrapiShim != null) {
+                            data = vrapiShim
+                        } else if (n == "lib/arm64-v8a/libOVRPlugin.so" && compat) {
+                            wrotePlugin = true
+                            data = shim
                         } else if (n == "lib/arm64-v8a/libopenxr_loader.so" && khronosLoader != null) {
-                            // Meta's loader only knows com.oculus.systemdriver (Quest). Swap in the standard Khronos
-                            // loader, which finds the runtime through the broker (OLFX -> Monado).
+                            wroteLoader = true
                             val orig = zin.getInputStream(e).readBytes()
-                            if (String(orig, Charsets.ISO_8859_1).contains("com.oculus.systemdriver")) data = khronosLoader
+                            // Compat always needs the Khronos loader. Normal Monado routing replaces Meta's
+                            // Quest-only loader; explicit OculusXR keeps Meta's loader intact.
+                            if (compat || (!preferOculus && String(orig, Charsets.ISO_8859_1).contains("com.oculus.systemdriver"))) data = khronosLoader
                         } else if (n == "AndroidManifest.xml") {
                             // let the game's OpenXR loader see OLFX (runtime broker) and the runtimes
                             data = try {
                                 ManifestEditor.addQueries(zin.getInputStream(e).readBytes(), QUERY_PACKAGES, QUERY_ACTIONS)
                             } catch (x: ManifestEditor.ManifestException) {
-                                throw PatchException("Манифест: ${x.message}")
+                                throw PatchException(ctx.getString(R.string.manifest_error, x.message ?: ""))
                             }
                         }
-                        // resources.arsc must be stored uncompressed and 4-byte aligned for apps targeting Android 11+
-                        val stored = e.method == ZipEntry.STORED || n == "resources.arsc"
-                        val ne = ZipEntry(outName)
-                        ne.time = e.time
-                        if (stored) {
-                            ne.method = ZipEntry.STORED
-                            if (data != null) {
-                                val crc = CRC32().also { it.update(data) }
-                                ne.size = data.size.toLong(); ne.compressedSize = data.size.toLong(); ne.crc = crc.value
-                            } else {
-                                ne.size = e.size; ne.compressedSize = e.size; ne.crc = e.crc
-                            }
-                            val align = if (n.endsWith(".so")) 16384 else 4
-                            ne.extra = alignExtra(counting.count, outName, align)
-                        } else {
-                            ne.method = ZipEntry.DEFLATED
-                        }
+                        emit(loaderOutName, data)
+                    }
+                    if (compat && !wrotePlugin && shim != null) {
+                        val ne = ZipEntry("lib/arm64-v8a/libOVRPlugin.so")
+                        ne.method = ZipEntry.DEFLATED
                         zout.putNextEntry(ne)
-                        if (data != null) {
-                            zout.write(data)
-                        } else {
-                            zin.getInputStream(e).use { it.copyTo(zout, 1 shl 16) }
-                        }
+                        zout.write(shim)
                         zout.closeEntry()
                     }
-                    if (ovrShim != null && "lib/arm64-v8a/libOVRPlugin.so" in names && "lib/arm64-v8a/libOVRPlugin_real.so" !in names) {
-                        val se = ZipEntry("lib/arm64-v8a/libOVRPlugin.so")
-                        se.method = ZipEntry.STORED
-                        se.size = ovrShim.size.toLong(); se.compressedSize = ovrShim.size.toLong()
-                        se.crc = CRC32().also { it.update(ovrShim) }.value
-                        se.extra = alignExtra(counting.count, se.name, 16384)
-                        zout.putNextEntry(se)
-                        zout.write(ovrShim)
+                    // The OpenXR-backed OVRPlugin shim needs a Khronos loader even in games that never shipped one.
+                    if (compat && !wroteLoader && khronosLoader != null) {
+                        val ne = ZipEntry("lib/arm64-v8a/libopenxr_loader.so")
+                        ne.method = ZipEntry.DEFLATED
+                        zout.putNextEntry(ne)
+                        zout.write(khronosLoader)
                         zout.closeEntry()
                     }
-                    // Patch marker for every kind of game (Unity's boot.config only exists in Unity games).
+                    // The VrApi adapter needs the OpenXR loader next to it (VrApi-only games ship none)
+                    if (vrapiShim != null && "lib/arm64-v8a/libvrapi.so" in names && "lib/arm64-v8a/libopenxr_loader.so" !in names && !wroteLoader && khronosLoader != null) {
+                        val ne = ZipEntry("lib/arm64-v8a/libopenxr_loader.so")
+                        ne.method = ZipEntry.DEFLATED
+                        zout.putNextEntry(ne)
+                        zout.write(khronosLoader)
+                        zout.closeEntry()
+                    }
+                    // Patch marker records loader routing so a later runtime change can re-optimize safely.
                     zout.putNextEntry(ZipEntry("assets/olfx-patch"))
-                    zout.write(mode.toByteArray())
+                    zout.write(ApkPatch.runtimeMarker(mode, loaderMode, compat).toByteArray())
                     zout.closeEntry()
                 }
             }

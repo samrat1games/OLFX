@@ -1,0 +1,26 @@
+// Copyright 2020-2022, Collabora, Ltd.
+// SPDX-License-Identifier: BSL-1.0
+
+pluginManagement {
+
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+
+    // This triggers an error if any individual project tries to add a repo not listed here.
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+}
+
+
+rootProject.name = 'olfx-only'
+include ':olfx'

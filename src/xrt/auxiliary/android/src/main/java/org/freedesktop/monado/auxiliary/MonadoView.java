@@ -31,6 +31,9 @@ import java.util.TreeSet;
 public class MonadoView extends SurfaceView
         implements SurfaceHolder.Callback, SurfaceHolder.Callback2 {
     private static final String TAG = "MonadoView";
+    // OpenXR clients may recreate their instance in the same Activity. The compositor keeps using
+    // the original Surface, so a second full-screen SurfaceView would obscure it with a black layer.
+    private static java.lang.ref.WeakReference<MonadoView> activityView = new java.lang.ref.WeakReference<>(null);
 
     private final Object currentSurfaceHolderSync = new Object();
 
@@ -70,13 +73,26 @@ public class MonadoView extends SurfaceView
      */
     @NonNull @Keep
     public static MonadoView attachToActivity(@NonNull final Activity activity) {
+        return attachToActivity(activity, GameBadgeOverlay.sbsEnabled(), GameBadgeOverlay.environmentGamePackage());
+    }
+
+    /** Client-process variant: the service passes SBS/package config explicitly because env is per-process. */
+    @NonNull
+    public static synchronized MonadoView attachToActivity(
+            @NonNull final Activity activity, boolean sbs, @Nullable String gamePackage) {
+        MonadoView existing = activityView.get();
+        if (existing != null && existing.getContext() == activity && !activity.isFinishing()) {
+            Log.d(TAG, "Reusing activity surface");
+            return existing;
+        }
         final MonadoView view = new MonadoView(activity);
+        activityView = new java.lang.ref.WeakReference<>(view);
         view.setKeepScreenOn(true);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
         lp.flags =
                 WindowManager.LayoutParams.FLAG_FULLSCREEN
                         | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
-        attachToWindow(activity, view, lp);
+        attachToWindow(activity, view, lp, sbs, gamePackage);
         return view;
     }
 
@@ -96,14 +112,16 @@ public class MonadoView extends SurfaceView
             throws IllegalArgumentException {
         final MonadoView view = new MonadoView(displayContext, nativePointer);
         view.setKeepScreenOn(true); // OLFX: the player's hands/head drive the game, nobody touches the screen
-        attachToWindow(displayContext, view, lp);
+        attachToWindow(displayContext, view, lp, GameBadgeOverlay.sbsEnabled(), GameBadgeOverlay.environmentGamePackage());
         return view;
     }
 
     private static void attachToWindow(
             @NonNull final Context context,
             @NonNull MonadoView view,
-            @NonNull WindowManager.LayoutParams lp) {
+            @NonNull WindowManager.LayoutParams lp,
+            boolean sbs,
+            @Nullable String gamePackage) {
         Handler handler = new Handler(Looper.getMainLooper());
         handler.post(
                 () -> {
@@ -115,35 +133,37 @@ public class MonadoView extends SurfaceView
                     SystemUiController systemUiController = new SystemUiController(view);
                     systemUiController.hide();
 
-                    // OLFX watermark: its own window above the compositor surface, removed with it.
-                    try {
-                        final android.view.View mark = OlfxWatermark.create(context);
-                        WindowManager.LayoutParams wlp =
-                                new WindowManager.LayoutParams(
-                                        WindowManager.LayoutParams.MATCH_PARENT,
-                                        WindowManager.LayoutParams.MATCH_PARENT,
-                                        lp.type,
-                                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                                                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                                                | WindowManager.LayoutParams.FLAG_FULLSCREEN
-                                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                                        android.graphics.PixelFormat.TRANSLUCENT);
-                        wm.addView(mark, wlp);
-                        view.addOnAttachStateChangeListener(
-                                new android.view.View.OnAttachStateChangeListener() {
-                                    @Override
-                                    public void onViewAttachedToWindow(android.view.View v) {}
+                    // SBS OLFX badge: tiny OLFX app image per lens, only when SBS is active. No text watermark.
+                    if (sbs && GameBadgeOverlay.shouldShow(context, gamePackage)) {
+                        try {
+                            final android.view.View mark = GameBadgeOverlay.create(context, gamePackage);
+                            WindowManager.LayoutParams wlp =
+                                    new WindowManager.LayoutParams(
+                                            WindowManager.LayoutParams.MATCH_PARENT,
+                                            WindowManager.LayoutParams.MATCH_PARENT,
+                                            lp.type,
+                                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                                    | WindowManager.LayoutParams.FLAG_FULLSCREEN
+                                                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                                            android.graphics.PixelFormat.TRANSLUCENT);
+                            wm.addView(mark, wlp);
+                            view.addOnAttachStateChangeListener(
+                                    new android.view.View.OnAttachStateChangeListener() {
+                                        @Override
+                                        public void onViewAttachedToWindow(android.view.View v) {}
 
-                                    @Override
-                                    public void onViewDetachedFromWindow(android.view.View v) {
-                                        try {
-                                            wm.removeView(mark);
-                                        } catch (RuntimeException ignored) {
+                                        @Override
+                                        public void onViewDetachedFromWindow(android.view.View v) {
+                                            try {
+                                                wm.removeView(mark);
+                                            } catch (RuntimeException ignored) {
+                                            }
                                         }
-                                    }
-                                });
-                    } catch (RuntimeException e) {
-                        Log.w(TAG, "watermark window failed: " + e);
+                                    });
+                        } catch (RuntimeException e) {
+                            Log.w(TAG, "game badge window failed: " + e);
+                        }
                     }
                 });
     }

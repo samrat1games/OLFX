@@ -16,6 +16,7 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
@@ -151,6 +152,15 @@ public class Client implements ServiceConnection {
             return -1;
         }
 
+        boolean sbs = false;
+        try {
+            Bundle displayConfig = monado.getOlfxDisplayConfig();
+            if (displayConfig != null) sbs = displayConfig.getBoolean("sbs", false);
+        } catch (RemoteException | RuntimeException e) {
+            Log.w(TAG, "OLFX display config unavailable; SBS badge disabled", e);
+        }
+        final boolean showSbsBadge = sbs;
+
         // This block of code asynchronously create a MonadoView attached to activity and
         // waits for Surface creation. Native code (comp_window_android_init_swapchain() method)
         // will poll for ANativeWindow created from this Surface.
@@ -166,7 +176,7 @@ public class Client implements ServiceConnection {
 
                             try {
                                 if (!monado.canDrawOverOtherApps() && activity != null) {
-                                    Surface surface = attachViewAndGetSurface(activity);
+                                    Surface surface = attachViewAndGetSurface(activity, showSbsBadge);
                                     if (surface == null) {
                                         Log.e(TAG, "Failed to create surface");
                                         handleFailure();
@@ -276,8 +286,8 @@ public class Client implements ServiceConnection {
         shutdown();
     }
 
-    @Nullable private Surface attachViewAndGetSurface(Activity activity) {
-        MonadoView monadoView = MonadoView.attachToActivity(activity);
+    @Nullable private Surface attachViewAndGetSurface(Activity activity, boolean sbs) {
+        MonadoView monadoView = MonadoView.attachToActivity(activity, sbs, activity.getPackageName());
         SurfaceHolder holder = monadoView.waitGetSurfaceHolder(2000);
         Surface surface = null;
         if (holder != null) {

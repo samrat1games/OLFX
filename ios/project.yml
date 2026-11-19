@@ -1,17 +1,158 @@
 name: OLFX
-options: { bundleIdPrefix: org.olfx, deploymentTarget: { iOS: "16.0" } }
+options:
+  bundleIdPrefix: org.olfx
+  deploymentTarget: { iOS: "16.0" }
+  createIntermediateGroups: true
+# Husk is compiled into the app (ios/third_party/Husk, fetched + built by scripts/build_husk.sh).
+settings:
+  base:
+    HUSK_BUNDLE_IDENTIFIER: org.olfx.launcher   # Husk's extensions must sit under the app's identifier
+    ARCHS: arm64
+    ENABLE_BITCODE: NO
+    SWIFT_VERSION: "5.0"
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
 targets:
   OLFX:
     type: application
     platform: iOS
-    sources: [OLFX]
-    info:
-      path: OLFX/Info.plist
-      properties:
-        CFBundleDisplayName: OLFX
-        NSCameraUsageDescription: OLFX uses the camera for hand tracking and 6DoF head tracking.
-        UILaunchScreen: {}
-        UIFileSharingEnabled: true
-        LSSupportsOpeningDocumentsInPlace: true
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortrait]
-    settings: { PRODUCT_BUNDLE_IDENTIFIER: org.olfx.launcher, SWIFT_VERSION: "5.0" }
+    sources:
+      - path: OLFX
+        excludes: ["XRLibs/**"]
+      - path: OLFX/XRLibs
+        type: folder
+        buildPhase: resources
+      - path: Generated/HuskApp.swift
+      - path: third_party/Husk/src/app/Husk
+        excludes: ["Resources/**", "HuskApp.swift", "Info.plist"]
+      - path: third_party/Husk/src/app/Husk/Resources
+        buildPhase: resources
+      - path: third_party/Husk/src/translation-layer
+      - path: third_party/Husk/src/translation-layer-next
+        excludes: ["husk-tl-unity-app.h"]
+      - path: third_party/Husk/src/app/HuskJITHelper/HuskJITMessages.swift
+      - path: third_party/Husk/src/app/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(HUSK_BUNDLE_IDENTIFIER)
+        OLFX_JAVA_RUNTIME_DIR: $(SRCROOT)/third_party/Husk/build/java-runtime
+        ASSETCATALOG_COMPILER_APPICON_NAME: OLFXIcon
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_FILE: Generated/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Generated/OLFX.entitlements
+        HEADER_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/../src/external/openxr_includes", "$(SRCROOT)/third_party/Husk/third_party/build/MoltenVK-1.4.2/External/Vulkan-Headers/include"]
+        SWIFT_OBJC_BRIDGING_HEADER: third_party/Husk/src/app/Husk/HuskBridge.h
+        TARGETED_DEVICE_FAMILY: "1,2"
+        LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/Frameworks"]
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/third_party/Husk/build/ios-arm64/lib"
+          - "$(SRCROOT)/third_party/Husk/src/app/Frameworks"
+        OTHER_LDFLAGS: ["$(inherited)", "-lz", "-lresolv", "-lsqlite3", "-lhusk_rppairing",
+          "-framework", "AudioToolbox", "-framework", "CoreText", "-framework", "CoreGraphics",
+          "-framework", "ImageIO", "-framework", "WebKit", "-framework", "VideoToolbox",
+          "-framework", "CoreMedia", "-framework", "CoreVideo", "-framework", "Accelerate",
+          "-framework", "Security"]
+    dependencies:
+      - target: HuskJITHelper
+      - target: HuskDownloadsWidget
+      - framework: third_party/Husk/build/ios-arm64/lib/libqemu-aarch64-softmmu.dylib
+        embed: true
+        codeSign: true
+      - framework: third_party/Husk/src/app/Frameworks/libFilePickerFix.dylib
+        embed: true
+        codeSign: true
+      - framework: third_party/Husk/build/ios-arm64/sysroot/lib/libANGLE-shared.dylib
+        embed: true
+        codeSign: true
+        link: false
+      - framework: third_party/Husk/build/ios-arm64/lib/MoltenVK.xcframework
+        embed: true
+        codeSign: true
+        link: false
+    preBuildScripts:
+      - name: Stage Husk guest and runtime
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          H="$SRCROOT/third_party/Husk"
+          R="$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+          [ -f "$H/guests/phase0/vmlinuz-virt" ] || { echo "error: run ios/scripts/build_husk.sh first" >&2; exit 1; }
+          mkdir -p "$R/pc-bios"
+          cp "$H/guests/phase0/vmlinuz-virt" "$H/guests/phase0/initramfs-virt" "$R/"
+          BIOS="$H/third_party/build/qemu-10.0.12-utm/pc-bios"
+          cp "$BIOS"/efi-*.rom "$BIOS"/pxe-*.rom "$R/pc-bios/" 2>/dev/null || true
+          [ -f "$R/edk2-aarch64-code.fd" ] || bunzip2 -c "$BIOS/edk2-aarch64-code.fd.bz2" > "$R/edk2-aarch64-code.fd"
+          rm -f "$R/lineage-efi-vars-seed.fd" "$R/lineage-vdb-seed.qcow2"
+          qemu-img create -f qcow2 "$R/lineage-efi-vars-seed.fd" 64M
+          qemu-img create -f qcow2 "$R/lineage-vdb-seed.qcow2" 16G
+          [ -d "$H/build/android-system/fonts" ] && rsync -a --delete "$H/build/android-system/" "$R/android-system/" || true
+          JRT="$OLFX_JAVA_RUNTIME_DIR"
+          if [ -d "$JRT" ]; then
+            for asset in husk-framework.dex framework-res.apk com.android.art/javalib/core-oj.jar com.android.art/javalib/core-libart.jar com.android.i18n/javalib/core-icu4j.jar com.android.conscrypt/javalib/conscrypt.jar; do
+              [ -s "$JRT/$asset" ] || { echo "error: incomplete Husk Java runtime: $JRT/$asset" >&2; exit 1; }
+            done
+            rsync -a --delete "$JRT/" "$R/java-runtime/"
+          else
+            rm -rf "$R/java-runtime"
+            echo "warning: Husk Java runtime directory missing; Android Java apps will have limited compatibility"
+          fi
+    postBuildScripts:
+      - name: Embed StikJIT
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          SRC="$SRCROOT/third_party/Husk/src/app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework"
+          DST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/StikJIT.framework"
+          rm -rf "$DST"; mkdir -p "$(dirname "$DST")"; ditto "$SRC" "$DST"
+          rm -rf "$DST/Headers" "$DST/Modules"
+          PLIST="$DST/Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            plutil -create xml1 "$PLIST"
+            plutil -insert CFBundleIdentifier -string "$PRODUCT_BUNDLE_IDENTIFIER.StikJIT" "$PLIST"
+            plutil -insert CFBundleExecutable -string StikJIT "$PLIST"
+            plutil -insert CFBundleName -string StikJIT "$PLIST"
+            plutil -insert CFBundlePackageType -string FMWK "$PLIST"
+            plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$PLIST"
+            plutil -insert CFBundleShortVersionString -string 1.9.0 "$PLIST"
+            plutil -insert CFBundleVersion -string 1.9.0 "$PLIST"
+            plutil -insert MinimumOSVersion -string 17.4 "$PLIST"
+            plutil -insert CFBundleSupportedPlatforms -array "$PLIST"
+            plutil -insert CFBundleSupportedPlatforms.0 -string iPhoneOS "$PLIST"
+          fi
+          if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ] && [ "$CODE_SIGNING_ALLOWED" != "NO" ]; then
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DST"
+          fi
+  HuskJITHelper:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: third_party/Husk/src/app/HuskJITHelper
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(HUSK_BUNDLE_IDENTIFIER).JITHelper
+        INFOPLIST_FILE: third_party/Husk/src/app/HuskJITHelper/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../../Frameworks"]
+    dependencies:
+      - framework: third_party/Husk/src/app/Frameworks/StikJIT.xcframework
+        embed: false
+  HuskDownloadsWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.1"
+    sources:
+      - path: third_party/Husk/src/app/HuskDownloadsWidget
+      - path: third_party/Husk/src/app/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(HUSK_BUNDLE_IDENTIFIER).Downloads
+        INFOPLIST_FILE: third_party/Husk/src/app/HuskDownloadsWidget/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
+        OTHER_LDFLAGS: ["$(inherited)", "-weak_framework", "ActivityKit"]
+        TARGETED_DEVICE_FAMILY: "1"

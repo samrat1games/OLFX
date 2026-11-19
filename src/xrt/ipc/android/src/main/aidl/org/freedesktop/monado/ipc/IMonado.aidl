@@ -9,6 +9,7 @@
 
 package org.freedesktop.monado.ipc;
 
+import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.view.Surface;
 
@@ -27,4 +28,10 @@ interface IMonado {
      * Asking service whether it has the capbility to draw over other apps or not.
      */
     boolean canDrawOverOtherApps();
+
+    /*!
+     * OLFX display overlay config for clients that host the Monado surface in their own process.
+     * Appended to preserve existing AIDL transaction ids used by the native IPC wrapper.
+     */
+    Bundle getOlfxDisplayConfig();
 }

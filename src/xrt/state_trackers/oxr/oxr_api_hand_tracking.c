@@ -186,6 +186,18 @@ oxr_xrLocateHandJointsEXT(XrHandTrackerEXT handTracker,
 	}
 #endif
 
+
+#ifdef OXR_HAVE_FB_hand_tracking_aim
+	if (OXR_GET_OUTPUT_FROM_CHAIN(locations, XR_TYPE_HAND_TRACKING_AIM_STATE_FB, XrHandTrackingAimStateFB) != NULL) {
+		OXR_VERIFY_EXTENSION(&log, hand_tracker->sess->sys->inst, FB_hand_tracking_aim);
+	}
+#endif
+#ifdef OXR_HAVE_FB_hand_tracking_capsules
+	if (OXR_GET_OUTPUT_FROM_CHAIN(locations, XR_TYPE_HAND_TRACKING_CAPSULES_STATE_FB, XrHandTrackingCapsulesStateFB) != NULL) {
+		OXR_VERIFY_EXTENSION(&log, hand_tracker->sess->sys->inst, FB_hand_tracking_capsules);
+	}
+#endif
+
 	return oxr_hand_tracker_joints(&log, hand_tracker, locateInfo, locations);
 }
 
@@ -213,4 +225,109 @@ oxr_xrApplyForceFeedbackCurlMNDX(XrHandTrackerEXT handTracker, const XrForceFeed
 	return oxr_hand_tracker_apply_force_feedback(&log, hand_tracker, locations);
 }
 
+#endif
+
+#ifdef OXR_HAVE_FB_hand_tracking_mesh
+/*
+ * OLFX: static open-hand bind pose so titles using Meta's OVRSkeleton can build and animate their bones.
+ * Joint frames are axis-aligned (-Z toward the fingertips), positions in metres relative to the wrist.
+ */
+XRAPI_ATTR XrResult XRAPI_CALL
+oxr_xrGetHandMeshFB(XrHandTrackerEXT handTracker, XrHandTrackingMeshFB *mesh)
+{
+	OXR_TRACE_MARKER();
+
+	struct oxr_hand_tracker *hand_tracker;
+	struct oxr_logger log;
+	OXR_VERIFY_HAND_TRACKER_AND_INIT_LOG(&log, handTracker, hand_tracker, "xrGetHandMeshFB");
+	OXR_VERIFY_ARG_TYPE_AND_NOT_NULL(&log, mesh, XR_TYPE_HAND_TRACKING_MESH_FB);
+
+	const float side = hand_tracker->hand == XR_HAND_LEFT_EXT ? -1.0f : 1.0f; // right hand: thumb toward -X
+	float p[XR_HAND_JOINT_COUNT_EXT][3] = {{0}};
+	int parent[XR_HAND_JOINT_COUNT_EXT];
+	float radius[XR_HAND_JOINT_COUNT_EXT];
+
+	parent[XR_HAND_JOINT_PALM_EXT] = XR_HAND_JOINT_PALM_EXT;
+	parent[XR_HAND_JOINT_WRIST_EXT] = XR_HAND_JOINT_PALM_EXT;
+	p[XR_HAND_JOINT_PALM_EXT][0] = -0.002f;
+	p[XR_HAND_JOINT_PALM_EXT][2] = -0.045f;
+
+	static const float thumb[4][3] = {{-0.020f, 0.0f, -0.020f}, {-0.035f, 0.0f, -0.040f},
+	                                  {-0.050f, 0.0f, -0.062f}, {-0.062f, 0.0f, -0.082f}};
+	for (int i = 0; i < 4; i++) {
+		int j = XR_HAND_JOINT_THUMB_METACARPAL_EXT + i;
+		parent[j] = i == 0 ? XR_HAND_JOINT_WRIST_EXT : j - 1;
+		for (int c = 0; c < 3; c++) p[j][c] = thumb[i][c];
+	}
+
+	static const float knuckle_x[4] = {-0.032f, -0.011f, 0.010f, 0.030f};
+	static const float knuckle_z[4] = {-0.082f, -0.085f, -0.080f, -0.072f};
+	static const float seg[4][3] = {{0.043f, 0.025f, 0.020f}, {0.047f, 0.028f, 0.021f},
+	                                {0.043f, 0.026f, 0.020f}, {0.033f, 0.019f, 0.018f}};
+	for (int f = 0; f < 4; f++) {
+		int base = XR_HAND_JOINT_INDEX_METACARPAL_EXT + f * 5;
+		p[base][0] = knuckle_x[f] * 0.25f;
+		p[base][2] = knuckle_z[f] * 0.25f;
+		parent[base] = XR_HAND_JOINT_WRIST_EXT;
+		float z = knuckle_z[f];
+		for (int i = 1; i < 5; i++) {
+			p[base + i][0] = knuckle_x[f];
+			p[base + i][2] = z;
+			parent[base + i] = base + i - 1;
+			if (i < 4) z -= seg[f][i - 1];
+		}
+	}
+
+	for (int j = 0; j < XR_HAND_JOINT_COUNT_EXT; j++) {
+		radius[j] = 0.010f;
+	}
+	radius[XR_HAND_JOINT_PALM_EXT] = 0.020f;
+	radius[XR_HAND_JOINT_WRIST_EXT] = 0.018f;
+
+	// Minimal one-triangle mesh bound to the wrist, so callers that insist on geometry get something valid.
+	static const float tri[3][3] = {{-0.02f, 0.0f, 0.0f}, {0.02f, 0.0f, 0.0f}, {0.0f, 0.0f, -0.04f}};
+
+	mesh->jointCountOutput = XR_HAND_JOINT_COUNT_EXT;
+	mesh->vertexCountOutput = 3;
+	mesh->indexCountOutput = 3;
+
+	if (mesh->jointCapacityInput != 0) {
+		if (mesh->jointCapacityInput < XR_HAND_JOINT_COUNT_EXT) {
+			return oxr_error(&log, XR_ERROR_SIZE_INSUFFICIENT, "joint capacity too small");
+		}
+		for (int j = 0; j < XR_HAND_JOINT_COUNT_EXT; j++) {
+			if (mesh->jointBindPoses != NULL) {
+				mesh->jointBindPoses[j].orientation = (XrQuaternionf){0.0f, 0.0f, 0.0f, 1.0f};
+				mesh->jointBindPoses[j].position = (XrVector3f){p[j][0] * side, p[j][1], p[j][2]};
+			}
+			if (mesh->jointRadii != NULL) mesh->jointRadii[j] = radius[j];
+			if (mesh->jointParents != NULL) mesh->jointParents[j] = (XrHandJointEXT)parent[j];
+		}
+	}
+	if (mesh->vertexCapacityInput != 0) {
+		if (mesh->vertexCapacityInput < 3) {
+			return oxr_error(&log, XR_ERROR_SIZE_INSUFFICIENT, "vertex capacity too small");
+		}
+		for (int v = 0; v < 3; v++) {
+			if (mesh->vertexPositions != NULL)
+				mesh->vertexPositions[v] = (XrVector3f){tri[v][0] * side, tri[v][1], tri[v][2]};
+			if (mesh->vertexNormals != NULL) mesh->vertexNormals[v] = (XrVector3f){0.0f, 1.0f, 0.0f};
+			if (mesh->vertexUVs != NULL) mesh->vertexUVs[v] = (XrVector2f){0.0f, 0.0f};
+			if (mesh->vertexBlendIndices != NULL)
+				mesh->vertexBlendIndices[v] = (XrVector4sFB){XR_HAND_JOINT_WRIST_EXT, 0, 0, 0};
+			if (mesh->vertexBlendWeights != NULL) mesh->vertexBlendWeights[v] = (XrVector4f){1.0f, 0.0f, 0.0f, 0.0f};
+		}
+	}
+	if (mesh->indexCapacityInput != 0) {
+		if (mesh->indexCapacityInput < 3) {
+			return oxr_error(&log, XR_ERROR_SIZE_INSUFFICIENT, "index capacity too small");
+		}
+		if (mesh->indices != NULL) {
+			mesh->indices[0] = 0;
+			mesh->indices[1] = side > 0 ? 1 : 2;
+			mesh->indices[2] = side > 0 ? 2 : 1;
+		}
+	}
+	return XR_SUCCESS;
+}
 #endif

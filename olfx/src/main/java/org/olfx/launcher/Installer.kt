@@ -1,73 +1,84 @@
+// Copyright 2026, OLFX contributors
+// SPDX-License-Identifier: BSL-1.0
 package org.olfx.launcher
 
+import android.app.Activity
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.os.Bundle
 import android.widget.Toast
+import org.freedesktop.monado.openxr_runtime.R
 import java.io.File
 
-/** Installs a patched APK through the system PackageInstaller (the user confirms the system dialog). */
+/** Starts an install inside OLFX; Android still requires the user's confirmation. */
 object Installer {
-    const val ACTION = "org.olfx.launcher.INSTALL_RESULT"
-
-    fun install(ctx: Context, apk: File) {
-        val pi = ctx.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-        val id = pi.createSession(params)
-        pi.openSession(id).use { s ->
-            apk.inputStream().use { input ->
-                s.openWrite("base.apk", 0, apk.length()).use { out ->
-                    input.copyTo(out, 1 shl 16)
-                    s.fsync(out)
+    fun install(context: Context, apk: File) {
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setSize(apk.length())
+            setInstallLocation(android.content.pm.PackageInfo.INSTALL_LOCATION_AUTO)
+        }
+        val id = installer.createSession(params)
+        try {
+            installer.openSession(id).use { session ->
+                apk.inputStream().use { input ->
+                    session.openWrite("base.apk", 0, apk.length()).use { output ->
+                        input.copyTo(output, 64 * 1024)
+                        session.fsync(output)
+                    }
                 }
+                val intent = Intent(context, InstallStatusActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                // The system installer fills in status extras; the destination is explicitly our own activity.
+                val pending = PendingIntent.getActivity(
+                    context, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                )
+                session.commit(pending.intentSender)
             }
-            val intent = Intent(ctx, InstallStatusActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            val pending = PendingIntent.getActivity(ctx, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
-            s.commit(pending.intentSender)
+        } catch (error: Exception) {
+            try { installer.abandonSession(id) } catch (_: Exception) {}
+            throw error
         }
     }
 }
 
-class InstallResultReceiver : BroadcastReceiver() {
-    override fun onReceive(ctx: Context, i: Intent) {
-        when (val status = i.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)) {
-            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                @Suppress("DEPRECATION")
-                val confirm = i.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                confirm?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (confirm != null) ctx.startActivity(confirm)
-            }
-            PackageInstaller.STATUS_SUCCESS ->
-                Toast.makeText(ctx, "Патч установлен", Toast.LENGTH_LONG).show()
-            else ->
-                Toast.makeText(ctx, "Установка не удалась ($status): ${i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)}", Toast.LENGTH_LONG).show()
-        }
-    }
-}
+/** Receives PackageInstaller callbacks without relying on a broadcast receiver or a retained UI instance. */
+class InstallStatusActivity : Activity() {
+    override fun attachBaseContext(newBase: Context) = super.attachBaseContext(AppLocale.wrap(newBase))
 
-/** Receives the PackageInstaller status as an activity (so it may legally show the system confirmation dialog). */
-class InstallStatusActivity : android.app.Activity() {
-    override fun onCreate(b: android.os.Bundle?) {
-        super.onCreate(b)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
         handle(intent)
     }
 
-    override fun onNewIntent(i: Intent) {
-        super.onNewIntent(i)
-        handle(i)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handle(intent)
     }
 
-    private fun handle(i: Intent) {
-        when (val status = i.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)) {
+    private fun handle(intent: Intent) {
+        when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 @Suppress("DEPRECATION")
-                val confirm = i.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                if (confirm != null) startActivity(confirm)
+                val confirmation = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                if (confirmation != null) {
+                    try {
+                        startActivity(confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (_: Exception) {
+                        Toast.makeText(this, R.string.install_confirmation_failed, Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    Toast.makeText(this, R.string.install_confirmation_failed, Toast.LENGTH_LONG).show()
+                }
             }
-            PackageInstaller.STATUS_SUCCESS -> Toast.makeText(this, "Установлено", Toast.LENGTH_LONG).show()
-            else -> Toast.makeText(this, "Установка не удалась ($status): ${i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)}", Toast.LENGTH_LONG).show()
+            PackageInstaller.STATUS_SUCCESS ->
+                Toast.makeText(this, R.string.install_success, Toast.LENGTH_LONG).show()
+            else -> {
+                val details = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty()
+                Toast.makeText(this, getString(R.string.install_status_failed, status, details), Toast.LENGTH_LONG).show()
+            }
         }
         finish()
     }

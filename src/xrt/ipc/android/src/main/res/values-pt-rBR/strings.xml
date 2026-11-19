@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="olfx_pinch_service_label">OLFX clique por pinça</string>
+    <string name="olfx_pinch_service_description">Permite que o OLFX transforme uma pinça (polegar + indicador) do hand tracking em um toque na tela. Ative somente se quiser cliques por pinça. O OLFX não lê o conteúdo da tela.</string>
+</resources>

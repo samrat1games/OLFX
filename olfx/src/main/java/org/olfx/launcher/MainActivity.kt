@@ -1,5 +1,6 @@
 package org.olfx.launcher
 
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -28,7 +29,9 @@ import com.google.android.material.shape.ShapeAppearanceModel
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 
-/** Material 3 launcher: bottom bar with Games / Favorite / Hand Tracking. */
+import java.util.concurrent.Executors
+
+/** Material 3 launcher: Games / Favorites / Hand Tracking / Settings. */
 class MainActivity : AppCompatActivity() {
     // Monado is part of this app now.
     private val monadoPkg get() = packageName
@@ -38,6 +41,9 @@ class MainActivity : AppCompatActivity() {
     private var query = ""
     private lateinit var prefs: Prefs
     private val adapter = Adapter()
+    private lateinit var settingsPage: SettingsPage
+    private val scanWorker = Executors.newSingleThreadExecutor()
+    private var scanGeneration = 0
 
     private lateinit var title: TextView
     private lateinit var subtitle: TextView
@@ -47,10 +53,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var permStatus: TextView
     private lateinit var permButton: MaterialButton
 
+    override fun attachBaseContext(newBase: Context) = super.attachBaseContext(AppLocale.wrap(newBase))
+
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         C.init(this)
         prefs = Prefs(this)
+        tab = b?.getInt(STATE_TAB)?.takeIf { it == TAB_GAMES || it == TAB_FAVORITE || it == TAB_SETTINGS } ?: TAB_GAMES
+        query = b?.getString(STATE_QUERY).orEmpty()
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -61,12 +71,13 @@ class MainActivity : AppCompatActivity() {
         root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
 
         gamesPage = buildGamesPage()
-        handsPage = buildHandsPage().also { it.visibility = View.GONE }
+        handsPage = buildHandsPage()
+        settingsPage = SettingsPage(this, prefs, handsPage)
         content.addView(gamesPage, FrameLayout.LayoutParams(-1, -1))
-        content.addView(handsPage, FrameLayout.LayoutParams(-1, -1))
+        content.addView(settingsPage.view, FrameLayout.LayoutParams(-1, -1))
 
         fab = ExtendedFloatingActionButton(this).apply {
-            text = "Add APK"
+            setText(R.string.add_apk)
             icon = getDrawable(R.drawable.ic_add)
             setOnClickListener { pickApk() }
         }
@@ -76,14 +87,36 @@ class MainActivity : AppCompatActivity() {
         })
 
         val nav = BottomNavigationView(this).apply {
-            menu.add(0, TAB_GAMES, 0, "Games").setIcon(R.drawable.ic_games)
-            menu.add(0, TAB_FAVORITE, 1, "Favorite").setIcon(R.drawable.ic_favorite)
-            menu.add(0, TAB_HANDS, 2, "Hand Tracking").setIcon(R.drawable.ic_hand)
+            menu.add(0, TAB_GAMES, 0, R.string.games).setIcon(R.drawable.ic_games)
+            menu.add(0, TAB_FAVORITE, 1, R.string.favorites).setIcon(R.drawable.ic_favorite)
+            menu.add(0, TAB_SETTINGS, 3, R.string.settings).setIcon(R.drawable.ic_settings)
             setOnItemSelectedListener { selectTab(it.itemId); true }
+            selectedItemId = tab
         }
         root.addView(nav, LinearLayout.LayoutParams(-1, -2))
         setContentView(root)
-        selectTab(TAB_GAMES)
+        selectTab(tab)
+        val permissions = getSharedPreferences("olfx_first_launch", MODE_PRIVATE)
+        if (android.os.Build.VERSION.SDK_INT >= 23 &&
+            !permissions.getBoolean("camera_asked", false)) {
+            permissions.edit().putBoolean("camera_asked", true).apply()
+            if (checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 810)
+            }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt(STATE_TAB, tab)
+        outState.putString(STATE_QUERY, query)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onDestroy() {
+        scanGeneration++
+        scanWorker.shutdownNow()
+        if (::settingsPage.isInitialized) settingsPage.destroy()
+        super.onDestroy()
     }
 
     // ---- pages ----------------------------------------------------------------------------------------------------
@@ -114,12 +147,13 @@ class MainActivity : AppCompatActivity() {
         page.addView(head)
 
         val search = TextInputLayout(this, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
-            hint = "Search"
+            hint = getString(R.string.search)
             endIconMode = TextInputLayout.END_ICON_CLEAR_TEXT
             setBoxCornerRadii(dp(28).toFloat(), dp(28).toFloat(), dp(28).toFloat(), dp(28).toFloat())
         }
         val edit = TextInputEditText(search.context).apply {
             setSingleLine()
+            setText(query)
             addTextChangedListener(object : TextWatcher {
                 override fun afterTextChanged(s: Editable?) { query = s.toString(); refilter() }
                 override fun beforeTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
@@ -180,52 +214,61 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(24), dp(16), dp(24))
         }
-        col.addView(headerTitle(false).apply { text = "Hand Tracking"; setPadding(dp(8), 0, 0, 0) })
-        col.addView(headerTitle(true).apply { text = "Use your own hands in VR games"; setPadding(dp(8), 0, 0, dp(16)) })
+        col.addView(headerTitle(false).apply { text = getString(R.string.hand_tracking); setPadding(dp(8), 0, 0, dp(16)) })
 
         fun gap() = LinearLayout.LayoutParams(-1, -2).also { it.bottomMargin = dp(12) }
 
         col.addView(card(C.SEC_CONTAINER) {
-            addView(switchRow("Hand tracking", "Rear camera, no controllers needed", C.ON_SEC_CONTAINER, C.ON_SEC_CONTAINER, prefs.handEnabled) { prefs.handEnabled = it })
+            addView(switchRow(getString(R.string.hand_tracking), getString(R.string.hands_camera_description), C.ON_SEC_CONTAINER, C.ON_SEC_CONTAINER, prefs.handEnabled) {
+                prefs.handEnabled = it
+                if (it) HandRuntime.startIfEnabled(this@MainActivity)
+            })
         }, gap())
 
         col.addView(card(C.SURFACE) {
-            addView(label("Camera access for Monado", 18f, C.TEXT, true))
+            addView(label(getString(R.string.camera_access), 18f, C.TEXT, true))
             permStatus = label("", 14f, C.MUTED)
             addView(permStatus, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(4) })
             permButton = MaterialButton(this@MainActivity).apply {
-                text = "Allow camera"
+                text = getString(R.string.allow_camera)
                 setOnClickListener { requestCamera() }
             }
             addView(permButton, LinearLayout.LayoutParams(-2, -2).also { it.topMargin = dp(12) })
         }, gap())
 
         col.addView(card(C.SURFACE) {
-            addView(switchRow("Swap left and right", "Turn on if your left hand shows up as the right one", C.MUTED, C.TEXT, prefs.handSwap) { prefs.handSwap = it })
+            addView(switchRow(getString(R.string.swap_hands), getString(R.string.swap_hands_description), C.MUTED, C.TEXT, prefs.handSwap) { prefs.handSwap = it })
         }, gap())
 
-        col.addView(card(C.TER_CONTAINER) {
-            addView(label("Tips", 18f, C.ON_TER_CONTAINER, true))
-            addView(label(
-                "Put the phone in the headset and hold your hands in front of the rear camera, 30 to 60 cm away, in good light. " +
-                    "An open palm is picked up fastest. Restart the game after changing a setting.",
-                14f, C.ON_TER_CONTAINER,
-            ), LinearLayout.LayoutParams(-1, -2).also { it.topMargin = dp(4) })
+        col.addView(card(C.SURFACE) {
+            addView(label(getString(R.string.hand_test_hint), 14f, C.MUTED))
+            addView(MaterialButton(this@MainActivity).apply {
+                text = getString(R.string.test_hand_tracking)
+                setOnClickListener { openHandTest() }
+            }, LinearLayout.LayoutParams(-2, -2).also { it.topMargin = dp(12) })
         }, gap())
 
-        return ScrollView(this).apply { addView(col) }
+        return col
     }
 
     private fun refreshHandStatus() {
         val installed = try { packageManager.getPackageInfo(monadoPkg, 0); true } catch (e: Exception) { false }
         if (!installed) {
-            permStatus.text = "Monado is not installed"
+            permStatus.setText(R.string.runtime_missing)
             permButton.visibility = View.GONE
             return
         }
         val granted = packageManager.checkPermission(android.Manifest.permission.CAMERA, monadoPkg) == PackageManager.PERMISSION_GRANTED
-        permStatus.text = if (granted) "Allowed. Hands work in games that ask for hand tracking." else "Not allowed yet: games will not see your hands."
+        permStatus.setText(if (granted) R.string.camera_allowed else R.string.camera_denied)
         permButton.visibility = if (granted) View.GONE else View.VISIBLE
+    }
+
+    private fun openHandTest() {
+        try {
+            startActivity(Intent().setClassName(packageName, "org.freedesktop.monado.ipc.HandTestActivity"))
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(this, getString(R.string.hand_test_unavailable), android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun requestCamera() {
@@ -238,12 +281,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun selectTab(t: Int) {
         tab = t
-        val hands = t == TAB_HANDS
-        gamesPage.visibility = if (hands) View.GONE else View.VISIBLE
-        handsPage.visibility = if (hands) View.VISIBLE else View.GONE
-        if (hands) fab.hide() else fab.show()
-        title.text = if (t == TAB_FAVORITE) "Favorite" else "Games"
-        if (hands) refreshHandStatus()
+        gamesPage.visibility = if (t == TAB_GAMES || t == TAB_FAVORITE) View.VISIBLE else View.GONE
+        settingsPage.view.visibility = if (t == TAB_SETTINGS) View.VISIBLE else View.GONE
+        if (t == TAB_GAMES || t == TAB_FAVORITE) fab.show() else fab.hide()
+        title.setText(if (t == TAB_FAVORITE) R.string.favorites else R.string.games)
+        if (t == TAB_SETTINGS) refreshHandStatus()
+        if (t == TAB_SETTINGS) settingsPage.refresh()
         refilter()
     }
 
@@ -253,6 +296,7 @@ class MainActivity : AppCompatActivity() {
     private val reqUninstall = 32
     private var readyApk: java.io.File? = null
     private var readyPkg: String? = null
+    private var awaitingInstallPermission = false
 
     private fun pickApk() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
@@ -270,20 +314,20 @@ class MainActivity : AppCompatActivity() {
         } else if (requestCode == reqUninstall) {
             val apk = readyApk
             if (apk != null && readyPkg?.let { !isInstalled(it) } == true) install(apk)
-            else android.widget.Toast.makeText(this, "Оригинал не удалён — установка отменена, APK сохранён: ${apk?.name}", android.widget.Toast.LENGTH_LONG).show()
+            else android.widget.Toast.makeText(this, getString(R.string.original_not_removed, apk?.name ?: ""), android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
     private fun isInstalled(pkg: String) = try { packageManager.getPackageInfo(pkg, 0); true } catch (e: Exception) { false }
 
     private fun onApkPicked(uri: android.net.Uri) {
-        val dlg = androidx.appcompat.app.AlertDialog.Builder(this).setTitle("APK").setMessage("Чтение файла…").setCancelable(false).show()
+        val dlg = androidx.appcompat.app.AlertDialog.Builder(this).setTitle(R.string.apk).setMessage(R.string.reading_file).setCancelable(false).show()
         Thread {
             try {
                 val tmp = java.io.File(cacheDir, "picked.apk")
                 contentResolver.openInputStream(uri)!!.use { i -> tmp.outputStream().use { o -> i.copyTo(o, 1 shl 16) } }
                 val info = packageManager.getPackageArchiveInfo(tmp.absolutePath, 0)
-                    ?: throw ApkPatcher.PatchException("Это не APK (для .apks / .xapk / .apkm пока нет поддержки)")
+                    ?: throw ApkPatcher.PatchException(getString(R.string.invalid_apk))
                 info.applicationInfo?.sourceDir = tmp.absolutePath
                 val pkg = info.packageName
                 val label = info.applicationInfo?.let { packageManager.getApplicationLabel(it).toString() } ?: pkg
@@ -295,32 +339,14 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun chooseMode(src: java.io.File, pkg: String, label: String, minSdk: Int) {
-        val modes = listOf(Profiles.OPT, Profiles.IMMERSIVE)
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("APK: $label")
-            .setItems(arrayOf(
-                "Патч: оптимизация — меньше памяти и нагрузки",
-                "Патч: нормальное погружение — ближе к оригиналу",
-                "Установить как есть, без патча",
-            )) { _, i ->
-                if (i < 2) runPatch(src, pkg, minSdk, modes[i])
-                else {
-                    if (isInstalled(pkg)) {
-                        androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Уже установлено")
-                            .setMessage("$label уже стоит. Для обновления подойдёт тот же ключ подписи, иначе установка откажет.")
-                            .setPositiveButton("Установить") { _, _ -> install(src) }
-                            .setNegativeButton("Отмена") { _, _ -> src.delete() }.show()
-                    } else install(src)
-                }
-            }
-            .setNegativeButton("Отмена") { _, _ -> src.delete() }
-            .setOnCancelListener { src.delete() }
-            .show()
-    }
-
     private fun runPatch(src: java.io.File, pkg: String, minSdk: Int, mode: String) {
-        val dlg = androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Патч APK").setMessage("Подготовка…").setCancelable(false).show()
+        // Imported APKs are always optimized once before install; no "install unchanged" path remains.
+        if (!OptimizationGate.tryAcquire(pkg)) {
+            src.delete()
+            fail(IllegalStateException(getString(R.string.patch_already_running)))
+            return
+        }
+        val dlg = androidx.appcompat.app.AlertDialog.Builder(this).setTitle(R.string.patch_apk).setMessage(R.string.preparing).setCancelable(false).show()
         Thread {
             try {
                 val out = ApkPatcher.patchFile(this, src, pkg, minSdk, mode) { m -> runOnUiThread { dlg.setMessage(m) } }
@@ -329,6 +355,8 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 src.delete()
                 runOnUiThread { dlg.dismiss(); fail(e) }
+            } finally {
+                OptimizationGate.release(pkg)
             }
         }.start()
     }
@@ -338,37 +366,57 @@ class MainActivity : AppCompatActivity() {
         readyApk = apk; readyPkg = pkg
         if (!isInstalled(pkg)) { install(apk); return }
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Патч готов")
-            .setMessage("Патч создан и лежит в ${apk.name}. Игра уже стоит с другой подписью, поэтому оригинал нужно удалить " +
-                "(сохранения внутри игры и OBB-файлы пропадут). Удалить оригинал и установить патч?")
-            .setPositiveButton("Да, заменить") { _, _ ->
+            .setTitle(R.string.patch_ready)
+            .setMessage(getString(R.string.replace_patch_message, apk.name))
+            .setPositiveButton(R.string.replace_install) { _, _ ->
                 @Suppress("DEPRECATION")
                 startActivityForResult(Intent(Intent.ACTION_DELETE, android.net.Uri.parse("package:$pkg")).putExtra(Intent.EXTRA_RETURN_RESULT, true), reqUninstall)
             }
-            .setNegativeButton("Не сейчас", null)
+            .setNegativeButton(R.string.not_now, null)
             .show()
     }
 
     private fun install(apk: java.io.File) {
         if (!packageManager.canRequestPackageInstalls()) {
-            android.widget.Toast.makeText(this, "Разрешите OLFX установку приложений и повторите выбор APK", android.widget.Toast.LENGTH_LONG).show()
-            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:$packageName")))
+            awaitingInstallPermission = true
+            readyApk = apk
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(R.string.install_permission_title)
+                .setMessage(R.string.allow_install_resume)
+                .setPositiveButton(R.string.open_settings) { _, _ ->
+                    try {
+                        startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:$packageName")))
+                    } catch (e: Exception) { fail(e) }
+                }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
             return
         }
         try { Installer.install(this, apk) } catch (e: Exception) { fail(e) }
     }
 
     private fun fail(e: Exception) {
-        androidx.appcompat.app.AlertDialog.Builder(this).setTitle("Не удалось").setMessage(e.message ?: e.toString()).setPositiveButton("Ок", null).show()
+        androidx.appcompat.app.AlertDialog.Builder(this).setTitle(R.string.error_title).setMessage(e.message ?: e.toString()).setPositiveButton(R.string.ok, null).show()
     }
 
     override fun onResume() {
         super.onResume()
-        if (tab == TAB_HANDS) refreshHandStatus()
-        Thread {
+        if (awaitingInstallPermission && packageManager.canRequestPackageInstalls()) {
+            awaitingInstallPermission = false
+            readyApk?.let { install(it) }
+        }
+        if (tab == TAB_SETTINGS) refreshHandStatus()
+        if (tab == TAB_SETTINGS) settingsPage.refresh()
+        val generation = ++scanGeneration
+        scanWorker.execute {
             val apps = AppScanner.scan(this)
-            runOnUiThread { all = apps; refilter() }
-        }.start()
+            runOnUiThread {
+                if (generation == scanGeneration && !isDestroyed) {
+                    all = apps
+                    refilter()
+                }
+            }
+        }
     }
 
     private fun refilter() {
@@ -377,7 +425,7 @@ class MainActivity : AppCompatActivity() {
             (query.isBlank() || it.label.contains(query, true) || it.pkg.contains(query, true)) &&
                 (tab != TAB_FAVORITE || it.pkg in favs)
         }.sortedWith(compareByDescending<AppEntry> { it.pkg in favs }.thenBy { it.label.lowercase() })
-        subtitle.text = "${list.size} " + if (tab == TAB_FAVORITE) "favorites" else "apps"
+        subtitle.text = resources.getQuantityString(if (tab == TAB_FAVORITE) R.plurals.favorites_count else R.plurals.apps_count, list.size, list.size)
         adapter.submit(list)
     }
 
@@ -436,5 +484,8 @@ class MainActivity : AppCompatActivity() {
         const val TAB_GAMES = 0
         const val TAB_FAVORITE = 1
         const val TAB_HANDS = 2
+        const val TAB_SETTINGS = 3
+        const val STATE_TAB = "tab"
+        const val STATE_QUERY = "query"
     }
 }

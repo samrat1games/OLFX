@@ -192,8 +192,9 @@ comp_window_android_create(struct comp_compositor *c)
 {
 	struct comp_window_android *w = U_TYPED_CALLOC(struct comp_window_android);
 
-	// The display timing code hasn't been tested on Android and may be broken.
-	comp_target_swapchain_init_and_set_fnptrs(&w->base, COMP_TARGET_FORCE_FAKE_DISPLAY_TIMING);
+	// VRMobile: use VK_GOOGLE_display_timing when the Android Vulkan driver exposes it for real
+	// vsync/present feedback; the swapchain target falls back to fake timing when it is unavailable.
+	comp_target_swapchain_init_and_set_fnptrs(&w->base, COMP_TARGET_USE_DISPLAY_IF_AVAILABLE);
 
 	w->base.base.name = "Android";
 	w->base.base.destroy = comp_window_android_destroy;

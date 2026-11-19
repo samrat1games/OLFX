@@ -1,0 +1,8 @@
+# Per-symbol policy for OVRPlugin exports that no source file implements (tier `impl`).
+# Columns (TAB separated): name, tier, note.   tier = unsupported | ok | ret=<int>
+# Anything not listed here is `unsupported` (returns ovrpFailure_Unsupported).
+#
+# Add an `ok` line ONLY when (a) the real signature is known and (b) the game cannot observe the
+# difference between "applied" and "ignored". Find candidates with:
+#   adb logcat -d -s OLFX-OVR > run.log && tools/ovr_shim/gen_policy.py --suggest run.log
+# Regenerate with tools/ovr_shim/gen_policy.py; tests fail if olfx_extra_stubs.c is stale.

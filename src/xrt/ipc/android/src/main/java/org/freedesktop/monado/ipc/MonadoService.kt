@@ -8,9 +8,11 @@
  */
 package org.freedesktop.monado.ipc
 
+import android.Manifest
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -34,6 +36,7 @@ class MonadoService : Service(), Watchdog.ShutdownListener {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
 
         binder = MonadoImpl(this)
         watchdog =
@@ -52,6 +55,7 @@ class MonadoService : Service(), Watchdog.ShutdownListener {
     }
 
     override fun onDestroy() {
+        isRunning = false
         super.onDestroy()
         Log.d(TAG, "onDestroy")
 
@@ -94,17 +98,25 @@ class MonadoService : Service(), Watchdog.ShutdownListener {
 
         val notification = serviceNotification.buildNotification(this, pendingShutdownIntent)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                serviceNotification.getNotificationId(),
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST,
-            )
-        } else {
-            startForeground(serviceNotification.getNotificationId(), notification)
+        // Android 14+ validates foreground-service types against granted permissions. Starting the
+        // old MANIFEST mask (connectedDevice|mediaPlayback|camera) without CAMERA permission threw a
+        // SecurityException before hand tracking could start. Pick one valid type instead, and never
+        // let a foregrounding failure prevent the runtime/hand-tracking start path.
+        val hasCamera = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val type =
+                    if (hasCamera) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                    else ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                startForeground(serviceNotification.getNotificationId(), notification, type)
+            } else {
+                startForeground(serviceNotification.getNotificationId(), notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed; continuing as a bound runtime service", e)
         }
 
-        // OLFX: camera hand tracking (needs the foreground state above; no-op without camera permission)
+        // OLFX: camera hand tracking (asks for permission if needed; no-op when disabled).
         OlfxHands.start(this)
     }
 
@@ -135,5 +147,25 @@ class MonadoService : Service(), Watchdog.ShutdownListener {
 
     companion object {
         private const val TAG = "MonadoService"
+
+        /** Lets the in-app hand test resume runtime tracking when it releases the camera. */
+        @Volatile var isRunning = false
+
+        /**
+         * Re-run the foreground-service start after CAMERA was granted from a foreground activity.
+         * Android 14 validates the camera FGS type against the permission at startForeground() time;
+         * a service that first started as connectedDevice must be promoted once the grant arrives.
+         */
+        @JvmStatic
+        fun refreshForeground(context: android.content.Context) {
+            if (!isRunning) return
+            try {
+                context.startService(
+                    Intent(context, MonadoService::class.java).setAction(BuildConfig.SERVICE_ACTION)
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "could not refresh foreground service after camera grant", e)
+            }
+        }
     }
 }

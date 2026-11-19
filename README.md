@@ -1,4 +1,4 @@
-> **OLFX fork** — see [OLFX.md](OLFX.md) for the launcher / OpenXR runtime broker (`olfx/`).
+> **OLFX fork** — see [OLFX.md](OLFX.md) for the launcher, built-in broker, OculusXR selection and Settings (`olfx/`).
 
 # Monado - XR Runtime (XRT)
 

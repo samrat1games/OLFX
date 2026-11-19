@@ -14,6 +14,11 @@
 
 #include "android_sensors.h"
 
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "os/os_time.h"
+
 #include "util/u_debug.h"
 #include "util/u_device.h"
 #include "util/u_distortion_mesh.h"
@@ -161,6 +166,7 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
 
 		os_mutex_lock(&d->lock);
 		d->last_accel = accel;
+		d->have_accel = true;
 		os_mutex_unlock(&d->lock);
 		break;
 	}
@@ -174,7 +180,21 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
 		// Lock last_accel and the fusion.
 		os_mutex_lock(&d->lock);
 
-		m_imu_3dof_update(&d->fusion, event->timestamp, &d->last_accel, &gyro);
+		if (d->have_accel) {
+			m_imu_3dof_update(&d->fusion, event->timestamp, &d->last_accel, &gyro);
+			d->have_gyro = true;
+			struct timespec boot;
+			if (clock_gettime(CLOCK_BOOTTIME, &boot) == 0) {
+				int64_t boot_ns = (int64_t)boot.tv_sec * 1000000000LL + boot.tv_nsec;
+				int64_t mono_ns = (int64_t)os_monotonic_get_ns();
+				int64_t sample_ns = event->timestamp - (boot_ns - mono_ns);
+				unsigned slot = d->history_next;
+				d->history[slot].timestamp_ns = sample_ns;
+				d->history[slot].orientation = d->fusion.rot;
+				d->history_next = (slot + 1) % 512;
+				if (d->history_count < 512) d->history_count++;
+			}
+		}
 
 		// Now done.
 		os_mutex_unlock(&d->lock);
@@ -211,8 +231,16 @@ android_run_thread(void *ptr)
 	sensor_manager = ASensorManager_getInstance();
 #endif
 
+	if (sensor_manager == NULL) {
+		ANDROID_ERROR(d, "Android sensor manager unavailable");
+		return NULL;
+	}
 	accelerometer = ASensorManager_getDefaultSensor(sensor_manager, ASENSOR_TYPE_ACCELEROMETER);
 	gyroscope = ASensorManager_getDefaultSensor(sensor_manager, ASENSOR_TYPE_GYROSCOPE);
+	if (accelerometer == NULL || gyroscope == NULL) {
+		ANDROID_ERROR(d, "Head tracking requires both an accelerometer and a gyroscope");
+		return NULL;
+	}
 
 	ALooper *event_looper = ALooper_forThread();
 	if (event_looper == NULL) {
@@ -223,7 +251,10 @@ android_run_thread(void *ptr)
 	}
 
 	event_queue = ASensorManager_createEventQueue(sensor_manager, event_looper, LOOPER_ID_USER, NULL, (void *)d);
-
+	if (event_queue == NULL) {
+		ANDROID_ERROR(d, "Could not create the sensor event queue");
+		return NULL;
+	}
 
 	/*
 	 * Start sensors in case this was not done already.
@@ -254,18 +285,20 @@ android_run_thread(void *ptr)
 		const int looper_id = ALooper_pollOnce(max_wait_milliseconds, NULL, &num_events, NULL);
 		// The device may have enabled a power-saving policy, causing the sensor to sleep and return
 		// ALOOPER_POLL_ERROR. However, we want to continue reading data when it wakes up.
+		if (looper_id == ALOOPER_POLL_TIMEOUT || looper_id == ALOOPER_POLL_WAKE) {
+			continue;
+		}
 		if (looper_id != LOOPER_ID_USER) {
-			ANDROID_ERROR(d, "ALooper_pollAll failed with looper_id: %d", looper_id);
+			ANDROID_ERROR(d, "Sensor looper failed: %d", looper_id);
 			continue;
 		}
-		if (num_events <= 0) {
-			ANDROID_ERROR(d, "ALooper_pollAll returned zero events");
-			continue;
-		}
-		// read event
-		ASensorEvent event;
-		while (ASensorEventQueue_getEvents(event_queue, &event, 1) > 0) {
-			android_sensor_callback(&event, d);
+		// Drain a batch instead of making one JNI/native call per sensor sample.
+		ASensorEvent events[32];
+		ssize_t count;
+		while ((count = ASensorEventQueue_getEvents(event_queue, events, 32)) > 0) {
+			for (ssize_t i = 0; i < count; i++) {
+				android_sensor_callback(&events[i], d);
+			}
 		}
 	}
 	// Disable sensors.
@@ -314,20 +347,38 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
                                 int64_t at_timestamp_ns,
                                 struct xrt_space_relation *out_relation)
 {
-	(void)at_timestamp_ns;
-
 	struct android_device *d = android_device(xdev);
 
 	struct xrt_space_relation new_relation = XRT_SPACE_RELATION_ZERO;
 
 	os_mutex_lock(&d->lock);
 	new_relation.pose.orientation = d->fusion.rot;
+	// A camera image describes the head at exposure, not when inference completed.
+	// Search newest-first and interpolate the two samples bracketing the requested time.
+	for (unsigned n = 0; at_timestamp_ns > 0 && n < d->history_count; n++) {
+		unsigned older = (d->history_next + 511 - n) % 512;
+		if (d->history[older].timestamp_ns <= at_timestamp_ns || n + 1 == d->history_count) {
+			new_relation.pose.orientation = d->history[older].orientation;
+			if (n > 0 && d->history[older].timestamp_ns <= at_timestamp_ns) {
+				unsigned newer = (older + 1) % 512;
+				int64_t span = d->history[newer].timestamp_ns - d->history[older].timestamp_ns;
+				if (span > 0) {
+					float f = (float)(at_timestamp_ns - d->history[older].timestamp_ns) / (float)span;
+					math_quat_slerp(&d->history[older].orientation, &d->history[newer].orientation,
+					                f, &new_relation.pose.orientation);
+				}
+			}
+			break;
+		}
+	}
+	const bool tracked = d->sensors_available && d->have_accel && d->have_gyro;
 	os_mutex_unlock(&d->lock);
 
-	//! @todo assuming that orientation is actually currently tracked.
-	new_relation.relation_flags = (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
-	                                                              XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-	                                                              XRT_SPACE_RELATION_POSITION_VALID_BIT);
+	if (tracked) {
+		new_relation.relation_flags = (enum xrt_space_relation_flags)(
+		    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
+	}
+	// This is a 3-DoF sensor device: never advertise a valid/tracked position.
 
 	*out_relation = new_relation;
 	return XRT_SUCCESS;
@@ -345,6 +396,13 @@ android_device_compute_distortion(
     struct xrt_device *xdev, uint32_t view, float u, float v, struct xrt_uv_triplet *result)
 {
 	struct android_device *d = android_device(xdev);
+	if (d->sbs) {
+		u_compute_distortion_identity(u, v, result);
+		return XRT_SUCCESS;
+	}
+	if (view >= 2) {
+		return XRT_ERROR_INPUT_UNSUPPORTED;
+	}
 	u_compute_distortion_cardboard(&d->cardboard.values[view], u, v, result);
 	return XRT_SUCCESS;
 }
@@ -368,14 +426,17 @@ android_device_create(void)
 	snprintf(d->base.serial, XRT_DEVICE_NAME_LEN, "Android Sensors");
 
 	d->log_level = debug_get_log_option_android_log();
+	const char *sbs = getenv("XRT_COMPOSITOR_SBS");
+	d->sbs = sbs != NULL && (strcmp(sbs, "1") == 0 || strcmp(sbs, "true") == 0);
 
 	m_imu_3dof_init(&d->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
 
 	int ret = os_mutex_init(&d->lock);
 	if (ret != 0) {
 		U_LOG_E("Failed to init mutex!");
-		android_device_destroy(&d->base);
-		return 0;
+		m_imu_3dof_close(&d->fusion);
+		free(d);
+		return NULL;
 	}
 
 	struct xrt_android_display_metrics metrics;
@@ -389,7 +450,8 @@ android_device_create(void)
 		metrics.refresh_rate = 60.0f;
 	}
 
-	d->base.hmd->screens[0].nominal_frame_interval_ns = time_s_to_ns(1.0f / metrics.refresh_rate);
+	const float refresh_rate = metrics.refresh_rate > 0.0f ? metrics.refresh_rate : 60.0f;
+	d->base.hmd->screens[0].nominal_frame_interval_ns = time_s_to_ns(1.0f / refresh_rate);
 
 	const uint32_t w_pixels = metrics.width_pixels;
 	const uint32_t h_pixels = metrics.height_pixels;
@@ -431,13 +493,20 @@ android_device_create(void)
 	// Distortion information.
 	u_distortion_mesh_fill_in_compute(&d->base);
 
-	// Everything done, finally start the thread.
+	ASensorManager *manager = ASensorManager_getInstanceForPackage(XRT_ANDROID_PACKAGE);
+	d->sensors_available = manager != NULL &&
+	    ASensorManager_getDefaultSensor(manager, ASENSOR_TYPE_ACCELEROMETER) != NULL &&
+	    ASensorManager_getDefaultSensor(manager, ASENSOR_TYPE_GYROSCOPE) != NULL;
+
 	os_thread_helper_init(&d->oth);
-	ret = os_thread_helper_start(&d->oth, android_run_thread, d);
-	if (ret != 0) {
-		ANDROID_ERROR(d, "Failed to start thread!");
-		android_device_destroy(&d->base);
-		return NULL;
+	if (d->sensors_available) {
+		ret = os_thread_helper_start(&d->oth, android_run_thread, d);
+		if (ret != 0) {
+			ANDROID_ERROR(d, "Failed to start sensor thread; continuing without head tracking");
+			d->sensors_available = false;
+		}
+	} else {
+		ANDROID_WARN(d, "Gyroscope/accelerometer unavailable; reporting orientation tracking as unsupported");
 	}
 
 	u_var_add_root(d, "Android phone", true);
@@ -445,7 +514,7 @@ android_device_create(void)
 	u_var_add_ro_vec3_f32(d, &d->fusion.last.accel, "last.accel");
 	u_var_add_ro_vec3_f32(d, &d->fusion.last.gyro, "last.gyro");
 
-	d->base.supported.orientation_tracking = true;
+	d->base.supported.orientation_tracking = d->sensors_available;
 	d->base.supported.position_tracking = false;
 
 	ANDROID_DEBUG(d, "Created device!");

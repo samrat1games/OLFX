@@ -28,6 +28,7 @@
 #include "util/u_config_json.h"
 
 #include "ht_ctrl_emu_interface.h"
+#include "olfx_phone_controller.hpp"
 
 #include <assert.h>
 #include <stdio.h>
@@ -52,6 +53,21 @@ enum cemu_input_index : std::uint8_t
 	CEMU_INDEX_GRIP,
 	CEMU_INDEX_AIM,
 	CEMU_NUM_INPUTS,
+
+	// XR_EXT_hand_interaction profile (OLFX). Kept after the legacy inputs so existing callers keep
+	// the same indices and allocation size.
+	CEMU_INDEX_HAND_PINCH_VALUE = CEMU_NUM_INPUTS,
+	CEMU_INDEX_HAND_PINCH_READY,
+	CEMU_INDEX_HAND_AIM_ACTIVATE_VALUE,
+	CEMU_INDEX_HAND_AIM_ACTIVATE_READY,
+	CEMU_INDEX_HAND_GRASP_VALUE,
+	CEMU_INDEX_HAND_GRASP_READY,
+	CEMU_INDEX_HAND_GRIP_POSE,
+	CEMU_INDEX_HAND_AIM_POSE,
+	CEMU_INDEX_HAND_PINCH_POSE,
+	CEMU_INDEX_HAND_POKE_POSE,
+	CEMU_INDEX_GENERIC_PALM_POSE,
+	CEMU_EXT_NUM_INPUTS,
 };
 
 static enum xrt_space_relation_flags valid_flags = (enum xrt_space_relation_flags)(
@@ -73,6 +89,9 @@ struct cemu_system
 	float waggle, curl, twist;
 
 	enum u_logging_level log_level;
+
+	//! OLFX: expose XR_EXT_hand_interaction and do not destroy the shared source hand tracker.
+	bool ext_hand_interaction;
 };
 
 struct cemu_device
@@ -165,7 +184,9 @@ cemu_device_destroy(struct xrt_device *xdev)
 	system->out_hand[dev->hand_index] = NULL;
 
 	if ((system->out_hand[0] == NULL) && (system->out_hand[1] == NULL)) {
-		xrt_device_destroy(&system->in_hand);
+		if (!system->ext_hand_interaction) {
+			xrt_device_destroy(&system->in_hand);
+		}
 		u_var_remove_root(system);
 		free(system);
 	}
@@ -374,11 +395,35 @@ cemu_device_get_tracked_pose(struct xrt_device *xdev,
 	struct cemu_device *dev = cemu_device(xdev);
 	struct cemu_system *sys = dev->sys;
 
-	if (name != XRT_INPUT_HAND_CTRL_EMU_AIM_POSE && name != XRT_INPUT_HAND_CTRL_EMU_GRIP_POSE) {
+	const bool legacy_pose =
+	    name == XRT_INPUT_HAND_CTRL_EMU_AIM_POSE || name == XRT_INPUT_HAND_CTRL_EMU_GRIP_POSE;
+	const bool ext_pose = sys->ext_hand_interaction &&
+	                      (name == XRT_INPUT_HAND_AIM_POSE || name == XRT_INPUT_HAND_GRIP_POSE ||
+	                       name == XRT_INPUT_HAND_PINCH_POSE || name == XRT_INPUT_HAND_POKE_POSE ||
+	                       name == XRT_INPUT_GENERIC_PALM_POSE);
+	if (!legacy_pose && !ext_pose) {
 		U_LOG_XDEV_UNSUPPORTED_INPUT(&dev->base, dev->sys->log_level, name);
 		return XRT_ERROR_INPUT_UNSUPPORTED;
 	}
-	static int64_t hand_timestamp_ns;
+#ifdef __ANDROID__
+	olfx_phone_state phone{};
+	if (sys->ext_hand_interaction && olfx_phone_get(dev->hand_index, &phone)) {
+		struct xrt_space_relation head = {};
+		xrt_device_get_tracked_pose(sys->in_head, XRT_INPUT_GENERIC_HEAD_POSE, at_timestamp_ns, &head);
+		if (!(head.relation_flags & XRT_SPACE_RELATION_ORIENTATION_VALID_BIT)) {
+			out_relation->relation_flags = XRT_SPACE_RELATION_BITMASK_NONE;
+			return XRT_SUCCESS;
+		}
+		struct xrt_pose local = {};
+		local.orientation = {phone.x, phone.y, phone.z, phone.w};
+		local.position = {dev->hand_index == 0 ? -0.22f : 0.22f, -0.35f, -0.35f};
+		math_pose_transform(&head.pose, &local, &out_relation->pose);
+		out_relation->relation_flags = (xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
+		    XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT | XRT_SPACE_RELATION_POSITION_VALID_BIT);
+		return XRT_SUCCESS;
+	}
+#endif
+	int64_t hand_timestamp_ns = 0;
 
 	struct xrt_hand_joint_set joint_set;
 	xrt_result_t xret = xrt_device_get_hand_tracking(sys->in_hand, dev->ht_input_name, at_timestamp_ns, &joint_set,
@@ -391,20 +436,81 @@ cemu_device_get_tracked_pose(struct xrt_device *xdev,
 	}
 
 	switch (name) {
-	case XRT_INPUT_HAND_CTRL_EMU_GRIP_POSE: {
+	case XRT_INPUT_HAND_CTRL_EMU_GRIP_POSE:
+	case XRT_INPUT_HAND_GRIP_POSE: {
 		xret = do_grip_pose(&joint_set, out_relation, sys->grip_offset_from_palm, dev->hand_index);
 		break;
 	}
-	case XRT_INPUT_HAND_CTRL_EMU_AIM_POSE: {
+	case XRT_INPUT_HAND_CTRL_EMU_AIM_POSE:
+	case XRT_INPUT_HAND_AIM_POSE: {
 		// Assume that now we're doing everything in the timestamp from the hand-tracker, so use
 		// hand_timestamp_ns. This will cause the controller to lag behind but otherwise be correct
 		xret = do_aim_pose(dev, &joint_set, at_timestamp_ns, hand_timestamp_ns, out_relation);
+		break;
+	}
+	case XRT_INPUT_GENERIC_PALM_POSE: {
+		out_relation->pose = joint_pose_global(&joint_set, XRT_HAND_JOINT_PALM);
+		out_relation->relation_flags = valid_flags;
+		break;
+	}
+	case XRT_INPUT_HAND_PINCH_POSE: {
+		const xrt_vec3 thumb = joint_position_global(&joint_set, XRT_HAND_JOINT_THUMB_TIP);
+		const xrt_vec3 index = joint_position_global(&joint_set, XRT_HAND_JOINT_INDEX_TIP);
+		out_relation->pose.position = (thumb + index) * 0.5f;
+		out_relation->pose.orientation = joint_pose_global(&joint_set, XRT_HAND_JOINT_PALM).orientation;
+		out_relation->relation_flags = valid_flags;
+		break;
+	}
+	case XRT_INPUT_HAND_POKE_POSE: {
+		const xrt_vec3 tip = joint_position_global(&joint_set, XRT_HAND_JOINT_INDEX_TIP);
+		const xrt_vec3 prox = joint_position_global(&joint_set, XRT_HAND_JOINT_INDEX_PROXIMAL);
+		xrt_vec3 forward = tip - prox;
+		if (m_vec3_len_sqrd(forward) < 1e-8f) {
+			forward = {0.0f, 0.0f, -1.0f};
+		}
+		math_vec3_normalize(&forward);
+		xrt_vec3 up = {0.0f, 1.0f, 0.0f};
+		xrt_vec3 right;
+		math_vec3_cross(&up, &forward, &right);
+		if (m_vec3_len_sqrd(right) < 1e-8f) {
+			right = {1.0f, 0.0f, 0.0f};
+		}
+		math_vec3_normalize(&right);
+		out_relation->pose.position = tip;
+		math_quat_from_plus_x_z(&right, &forward, &out_relation->pose.orientation);
+		out_relation->relation_flags = valid_flags;
 		break;
 	}
 	default: assert(false);
 	}
 
 	return xret;
+}
+
+static float
+clamp01(float v)
+{
+	return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+//! Heuristic grasp strength from how close the non-index fingertips curl toward the wrist. It is not a
+//! calibrated force; it only gives controller-only titles a usable squeeze/grasp channel from camera hands.
+static float
+hand_grasp_value(struct xrt_hand_joint_set *joint_set)
+{
+	const xrt_vec3 wrist = joint_position_global(joint_set, XRT_HAND_JOINT_WRIST);
+	const xrt_vec3 middle_prox = joint_position_global(joint_set, XRT_HAND_JOINT_MIDDLE_PROXIMAL);
+	const float hand_size = m_vec3_len(middle_prox - wrist);
+	if (hand_size < 1e-5f) {
+		return 0.0f;
+	}
+	const xrt_hand_joint tips[] = {XRT_HAND_JOINT_MIDDLE_TIP, XRT_HAND_JOINT_RING_TIP, XRT_HAND_JOINT_LITTLE_TIP};
+	float sum = 0.0f;
+	for (xrt_hand_joint tip : tips) {
+		const float ratio = m_vec3_len(joint_position_global(joint_set, tip) - wrist) / hand_size;
+		sum += clamp01((1.75f - ratio) / 0.9f);
+	}
+	return clamp01(sum / 3.0f);
 }
 
 //! @todo This is flickery; investigate once we get better hand tracking
@@ -422,11 +528,50 @@ decide(xrt_vec3 one, xrt_vec3 two, bool *out)
 	*out = (dist < pinch_activation_dist);
 }
 
+/*!
+ * EXT hand-interaction pinch uses a palm-relative threshold with hysteresis, matching the launcher’s
+ * deliberate-pinch detector. Absolute 2 cm thresholds miss small/far hands and chatter on noisy depth.
+ */
+static void
+decide_ext_pinch(struct xrt_hand_joint_set *joint_set, bool *out)
+{
+	const xrt_vec3 wrist = joint_position_global(joint_set, XRT_HAND_JOINT_WRIST);
+	const xrt_vec3 middle = joint_position_global(joint_set, XRT_HAND_JOINT_MIDDLE_PROXIMAL);
+	const float hand_size = m_vec3_len(middle - wrist);
+	if (hand_size < 1e-4f) {
+		decide(joint_set->values.hand_joint_set_default[XRT_HAND_JOINT_INDEX_TIP].relation.pose.position,
+		       joint_set->values.hand_joint_set_default[XRT_HAND_JOINT_THUMB_TIP].relation.pose.position, out);
+		return;
+	}
+	const float ratio =
+	    m_vec3_len(joint_position_global(joint_set, XRT_HAND_JOINT_INDEX_TIP) -
+	               joint_position_global(joint_set, XRT_HAND_JOINT_THUMB_TIP)) /
+	    hand_size;
+	const float threshold = *out ? 0.46f : 0.30f;
+	*out = ratio <= threshold;
+}
+
 static xrt_result_t
 cemu_device_update_inputs(struct xrt_device *xdev)
 {
 	struct cemu_device *dev = cemu_device(xdev);
 	struct cemu_system *sys = dev->sys;
+
+#ifdef __ANDROID__
+	olfx_phone_state phone{};
+	if (sys->ext_hand_interaction && olfx_phone_get(dev->hand_index, &phone)) {
+		xdev->inputs[CEMU_INDEX_PINCH_BOOL].value.boolean = phone.trigger > 0.5f;
+		xdev->inputs[CEMU_INDEX_PINCH_FLOAT].value.vec1.x = phone.trigger;
+		for (uint32_t i = CEMU_NUM_INPUTS; i < CEMU_EXT_NUM_INPUTS; i++) xdev->inputs[i].active = true;
+		xdev->inputs[CEMU_INDEX_HAND_PINCH_VALUE].value.vec1.x = phone.trigger;
+		xdev->inputs[CEMU_INDEX_HAND_AIM_ACTIVATE_VALUE].value.vec1.x = phone.trigger;
+		xdev->inputs[CEMU_INDEX_HAND_GRASP_VALUE].value.vec1.x = phone.grip;
+		xdev->inputs[CEMU_INDEX_HAND_PINCH_READY].value.boolean = true;
+		xdev->inputs[CEMU_INDEX_HAND_AIM_ACTIVATE_READY].value.boolean = true;
+		xdev->inputs[CEMU_INDEX_HAND_GRASP_READY].value.boolean = true;
+		return XRT_SUCCESS;
+	}
+#endif
 
 	struct xrt_hand_joint_set joint_set;
 	int64_t noop;
@@ -438,12 +583,28 @@ cemu_device_update_inputs(struct xrt_device *xdev)
 	if (!joint_set.is_active) {
 		xdev->inputs[CEMU_INDEX_PINCH_BOOL].value.boolean = false;
 		xdev->inputs[CEMU_INDEX_PINCH_FLOAT].value.vec1.x = 0.f;
+		if (sys->ext_hand_interaction) {
+			for (uint32_t i = CEMU_NUM_INPUTS; i < CEMU_EXT_NUM_INPUTS; i++) {
+				xdev->inputs[i].active = false;
+				if (i == CEMU_INDEX_HAND_PINCH_VALUE || i == CEMU_INDEX_HAND_AIM_ACTIVATE_VALUE ||
+				    i == CEMU_INDEX_HAND_GRASP_VALUE) {
+					xdev->inputs[i].value.vec1.x = 0.0f;
+				} else if (i == CEMU_INDEX_HAND_PINCH_READY || i == CEMU_INDEX_HAND_AIM_ACTIVATE_READY ||
+				           i == CEMU_INDEX_HAND_GRASP_READY) {
+					xdev->inputs[i].value.boolean = false;
+				}
+			}
+		}
 		return XRT_SUCCESS;
 	}
 
-	decide(joint_set.values.hand_joint_set_default[XRT_HAND_JOINT_INDEX_TIP].relation.pose.position,
-	       joint_set.values.hand_joint_set_default[XRT_HAND_JOINT_THUMB_TIP].relation.pose.position,
-	       &xdev->inputs[CEMU_INDEX_PINCH_BOOL].value.boolean);
+	if (sys->ext_hand_interaction) {
+		decide_ext_pinch(&joint_set, &xdev->inputs[CEMU_INDEX_PINCH_BOOL].value.boolean);
+	} else {
+		decide(joint_set.values.hand_joint_set_default[XRT_HAND_JOINT_INDEX_TIP].relation.pose.position,
+		       joint_set.values.hand_joint_set_default[XRT_HAND_JOINT_THUMB_TIP].relation.pose.position,
+		       &xdev->inputs[CEMU_INDEX_PINCH_BOOL].value.boolean);
+	}
 
 	// For now, all other inputs are off - detecting any gestures more complicated than pinch is too unreliable for
 	// now.
@@ -453,11 +614,28 @@ cemu_device_update_inputs(struct xrt_device *xdev)
 		xdev->inputs[CEMU_INDEX_PINCH_FLOAT].value.vec1.x = 0.0f;
 	}
 
+	if (sys->ext_hand_interaction) {
+		const float pinch = xdev->inputs[CEMU_INDEX_PINCH_FLOAT].value.vec1.x;
+		const float grasp = hand_grasp_value(&joint_set);
+		xdev->inputs[CEMU_INDEX_HAND_PINCH_VALUE].value.vec1.x = pinch;
+		xdev->inputs[CEMU_INDEX_HAND_AIM_ACTIVATE_VALUE].value.vec1.x = pinch;
+		xdev->inputs[CEMU_INDEX_HAND_GRASP_VALUE].value.vec1.x = grasp;
+		xdev->inputs[CEMU_INDEX_HAND_PINCH_READY].value.boolean = true;
+		xdev->inputs[CEMU_INDEX_HAND_AIM_ACTIVATE_READY].value.boolean = true;
+		xdev->inputs[CEMU_INDEX_HAND_GRASP_READY].value.boolean = true;
+		for (uint32_t i = CEMU_NUM_INPUTS; i < CEMU_EXT_NUM_INPUTS; i++) {
+			xdev->inputs[i].active = true;
+		}
+	}
+
 	return XRT_SUCCESS;
 }
 
-extern "C" int
-cemu_devices_create(struct xrt_device *head, struct xrt_device *hands, struct xrt_device **out_xdevs)
+static int
+cemu_devices_create_impl(struct xrt_device *head,
+                         struct xrt_device *hands,
+                         struct xrt_device **out_xdevs,
+                         bool ext_hand_interaction)
 {
 	enum xrt_input_name ht_input_names[2];
 	if (!find_best_ht_input_names(hands, ht_input_names)) {
@@ -478,17 +656,20 @@ cemu_devices_create(struct xrt_device *head, struct xrt_device *hands, struct xr
 	system->in_head = head;
 
 	system->log_level = debug_get_log_option_cemu_log();
+	system->ext_hand_interaction = ext_hand_interaction;
 
 	system->grip_offset_from_palm = 0.03f; // 3 centimeters
 
+	const size_t input_count = ext_hand_interaction ? CEMU_EXT_NUM_INPUTS : CEMU_NUM_INPUTS;
 	for (int i = 0; i < 2; i++) {
-		cemud[i] = U_DEVICE_ALLOCATE(struct cemu_device, flags, CEMU_NUM_INPUTS, 0);
+		cemud[i] = U_DEVICE_ALLOCATE(struct cemu_device, flags, input_count, 0);
 
 		cemud[i]->sys = system;
 
 		cemud[i]->base.tracking_origin = hands->tracking_origin;
 
-		cemud[i]->base.name = XRT_DEVICE_HAND_CTRL_EMU;
+		cemud[i]->base.name =
+		    ext_hand_interaction ? XRT_DEVICE_EXT_HAND_INTERACTION : XRT_DEVICE_HAND_CTRL_EMU;
 		cemud[i]->base.supported.hand_tracking = true;
 		cemud[i]->base.supported.orientation_tracking = true;
 		cemud[i]->base.supported.position_tracking = true;
@@ -498,6 +679,19 @@ cemu_devices_create(struct xrt_device *head, struct xrt_device *hands, struct xr
 		cemud[i]->base.inputs[CEMU_INDEX_PINCH_FLOAT].name = XRT_INPUT_HAND_CTRL_EMU_PINCH_VALUE;
 		cemud[i]->base.inputs[CEMU_INDEX_GRIP].name = XRT_INPUT_HAND_CTRL_EMU_GRIP_POSE;
 		cemud[i]->base.inputs[CEMU_INDEX_AIM].name = XRT_INPUT_HAND_CTRL_EMU_AIM_POSE;
+		if (ext_hand_interaction) {
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_PINCH_VALUE].name = XRT_INPUT_HAND_PINCH_VALUE;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_PINCH_READY].name = XRT_INPUT_HAND_PINCH_READY;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_AIM_ACTIVATE_VALUE].name = XRT_INPUT_HAND_AIM_ACTIVATE_VALUE;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_AIM_ACTIVATE_READY].name = XRT_INPUT_HAND_AIM_ACTIVATE_READY;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_GRASP_VALUE].name = XRT_INPUT_HAND_GRASP_VALUE;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_GRASP_READY].name = XRT_INPUT_HAND_GRASP_READY;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_GRIP_POSE].name = XRT_INPUT_HAND_GRIP_POSE;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_AIM_POSE].name = XRT_INPUT_HAND_AIM_POSE;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_PINCH_POSE].name = XRT_INPUT_HAND_PINCH_POSE;
+			cemud[i]->base.inputs[CEMU_INDEX_HAND_POKE_POSE].name = XRT_INPUT_HAND_POKE_POSE;
+			cemud[i]->base.inputs[CEMU_INDEX_GENERIC_PALM_POSE].name = XRT_INPUT_GENERIC_PALM_POSE;
+		}
 
 		u_device_populate_function_pointers(&cemud[i]->base, cemu_device_get_tracked_pose, cemu_device_destroy);
 		cemud[i]->base.update_inputs = cemu_device_update_inputs;
@@ -534,4 +728,18 @@ cemu_devices_create(struct xrt_device *head, struct xrt_device *hands, struct xr
 	// 	cemu_device_destroy(&cemud[0]->base);
 	// 	cemu_device_destroy(&cemud[1]->base);
 	// 	return 0;
+}
+
+extern "C" int
+cemu_devices_create(struct xrt_device *head, struct xrt_device *hands, struct xrt_device **out_xdevs)
+{
+	return cemu_devices_create_impl(head, hands, out_xdevs, false);
+}
+
+extern "C" int
+cemu_devices_create_ext_hand_interaction(struct xrt_device *head,
+                                         struct xrt_device *hands,
+                                         struct xrt_device **out_xdevs)
+{
+	return cemu_devices_create_impl(head, hands, out_xdevs, true);
 }

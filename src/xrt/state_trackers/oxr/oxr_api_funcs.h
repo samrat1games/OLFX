@@ -503,6 +503,12 @@ oxr_xrLocateHandJointsEXT(XrHandTrackerEXT handTracker,
                           const XrHandJointsLocateInfoEXT *locateInfo,
                           XrHandJointLocationsEXT *locations);
 
+#ifdef OXR_HAVE_FB_hand_tracking_mesh
+//! OpenXR API function @ep{xrGetHandMeshFB}
+XRAPI_ATTR XrResult XRAPI_CALL
+oxr_xrGetHandMeshFB(XrHandTrackerEXT handTracker, XrHandTrackingMeshFB *mesh);
+#endif
+
 //! OpenXR API function @ep{xrApplyForceFeedbackCurlMNDX}
 XRAPI_ATTR XrResult XRAPI_CALL
 oxr_xrApplyForceFeedbackCurlMNDX(XrHandTrackerEXT handTracker, const XrForceFeedbackCurlApplyLocationsMNDX *locations);

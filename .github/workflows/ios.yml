@@ -6,8 +6,9 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
-      - run: brew install xcodegen
-      - run: cd ios && xcodegen generate
+      - run: brew install xcodegen meson ninja pkg-config qemu
+      - run: rustup target add aarch64-apple-ios
+      - run: ios/scripts/build_husk.sh
       - run: >
           cd ios && xcodebuild -project OLFX.xcodeproj -scheme OLFX -sdk iphoneos
           -configuration Release CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=""

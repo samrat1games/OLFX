@@ -1,0 +1,29 @@
+diff --git a/src/translation-layer-next/husk-tl-bionic-str.c b/src/translation-layer-next/husk-tl-bionic-str.c
+index 03c3abc..6183be5 100644
+--- a/src/translation-layer-next/husk-tl-bionic-str.c
++++ b/src/translation-layer-next/husk-tl-bionic-str.c
+@@ -646,10 +646,16 @@ static int locale_is_c(const char *v)
+     return !v || !*v || !strcmp(v, "C") || !strcmp(v, "POSIX")
+         || !strncasecmp(v, "C.", 2) || !strncasecmp(v, "POSIX.", 6);
+ }
++const char *tl_data_dir(void);
++
+ /* IL2CPP CultureInfo reads LANG / LC_* before setlocale: a POSIX "C" becomes culture name "c" and throws. */
+ static char *b_getenv(const char *name)
+ {
+     char *v = getenv(name);
++    /* Libraries such as app_dirs2 try XDG before asking Android for a data
++       directory. Keep that fallback inside this guest application's container. */
++    if ((!v || !*v) && name && !strcmp(name, "XDG_CONFIG_HOME"))
++        return (char *)tl_data_dir();
+     /* JavaScriptCore (React Native before Hermes) reads its options as JSC_<name>: its JITs write code into memory that is
+        made executable, which here can only be read and executed (W^X), so it runs its interpreter (LLInt), as on a phone */
+     if (!v && name && !strncmp(name, "JSC_", 4)) {
+@@ -691,7 +697,6 @@ static locale_t b_newlocale(int mask, const char *name, locale_t base)
+ /* setenv: python-for-android's launcher reads its folders from ANDROID_* and PYTHON* variables and refuses a script path over
+  * 128 characters; the app's real folder on a phone is longer than that by itself. In those variables the folder is written by
+  * its Android name, /data/user/0/app, which the path resolver maps back. */
+-const char *tl_data_dir(void);
+ static int b_setenv(const char *k, const char *v, int overwrite)
+ {
+     if (k && v && (!strncmp(k, "ANDROID_", 8) || !strncmp(k, "PYTHON", 6))) {

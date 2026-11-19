@@ -1,0 +1,12 @@
+diff --git a/src/translation-layer-next/husk-tl-arm32.c b/src/translation-layer-next/husk-tl-arm32.c
+--- a/src/translation-layer-next/husk-tl-arm32.c
++++ b/src/translation-layer-next/husk-tl-arm32.c
+@@ -1147,7 +1147,7 @@
+         return 1;
+     }
+     /* bx / blx reg */
+-    if ((insn & 0x0FFFFFF0u) == 0x012FFF10u) {
++    if ((insn & 0x0FFFFFD0u) == 0x012FFF10u) {
+         uint32_t t = CPU.r[insn & 15];
+         if ((insn & 0xF0) == 0x30) CPU.r[R_LR] = CPU.r[R_PC]; /* blx */
+         CPU.cpsr = (CPU.cpsr & ~0x20u) | ((t & 1) << 5);

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="olfx_pinch_service_label">OLFX: щипок-клик</string>
+    <string name="olfx_pinch_service_description">Позволяет OLFX превращать щипок большого и указательного пальцев в касание экрана. Включайте, только если нужны клики щипком. OLFX не читает содержимое экрана.</string>
+</resources>

@@ -13,6 +13,7 @@ public class CameraPermissionActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            MonadoService.refreshForeground(this);
             OlfxHands.start(this);
             finish();
             return;
@@ -24,6 +25,7 @@ public class CameraPermissionActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            MonadoService.refreshForeground(this);
             OlfxHands.start(this);
         }
         finish();

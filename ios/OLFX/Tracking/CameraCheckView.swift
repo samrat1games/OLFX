@@ -11,7 +11,7 @@ final class CameraCheck: NSObject, ObservableObject {
         switch status {
         case .authorized: return "Camera OK"
         case .denied, .restricted: return "Camera blocked: enable it in Settings"
-        default: return "Camera permission needed"
+        default: return T("camNeeded")
         }
     }
     func request() {
@@ -52,9 +52,9 @@ struct CameraCheckView: View {
             if cam.status == .authorized {
                 CameraPreview(session: cam.session).frame(height: 200).clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             } else if cam.status == .notDetermined {
-                Button("Allow camera") { cam.request() }.buttonStyle(.borderedProminent)
+                Button(T("camAllow")) { cam.request() }.buttonStyle(.borderedProminent)
             } else {
-                Button("Open Settings") { if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) } }.buttonStyle(.bordered)
+                Button(T("camOpen")) { if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) } }.buttonStyle(.bordered)
             }
         }
         .padding(16).glass(cornerRadius: 24)

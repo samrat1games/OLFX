@@ -253,11 +253,21 @@ android {
         flavor.dimension 'deployment'
         // OLFX: the launcher and the Monado runtime are ONE app (package org.olfx.launcher)
         flavor.applicationId 'org.olfx.launcher'
-        flavor.versionCode = 10
+        flavor.versionCode = 16
         flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_SERVICE=ON"
         // The native client binds to the runtime service by package name: it is the OLFX app itself now.
         flavor.externalNativeBuild.cmake.arguments += "-DXRT_ANDROID_PACKAGE=org.olfx.launcher"
-        flavor.externalNativeBuild.cmake.targets "openxr_monado", "monado-service"
+        // Pin the OpenXR hand-tracking delivery path explicitly so a future default change cannot
+        // silently remove XR_EXT_hand_tracking / XR_EXT_hand_interaction from the runtime.
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_BUILD_DRIVER_ANDROID=ON"
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_EXT=ON"
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_DATA_SOURCE_EXT=ON"
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_INTERACTION_EXT_PALM_POSE=ON"
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_INTERACTION_EXT_HAND=ON"
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_AIM_FB=ON"
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_CAPSULES_FB=ON"
+        flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_MESH_FB=ON"
+        flavor.externalNativeBuild.cmake.targets "openxr_monado", "monado-service", "ovrplugin_compat"
         flavor.buildConfigField "boolean", "inProcess", "false"
         flavor.resValue "string", "app_name", appName
     }
@@ -297,6 +307,9 @@ android {
         main {
             java.srcDirs += "${rootDir}/olfx/src/main/java"
             assets.srcDirs += "${rootDir}/olfx/src/main/assets"
+        }
+        test {
+            java.srcDirs += "${rootDir}/olfx/src/test/java"
         }
     }
     lint {
@@ -339,6 +352,7 @@ dependencies {
     implementation "androidx.recyclerview:recyclerview:$androidxRecyclerViewVersion"
     // OLFX: on-device APK signing
     implementation "com.android.tools.build:apksig:8.6.0"
+    testImplementation "junit:junit:4.13.2"
 
 
     // for Hilt dependency injection
