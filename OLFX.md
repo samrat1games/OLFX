@@ -166,3 +166,13 @@ OculusXR discovery path, hand-tracking alignment/test, restored Play flow and SB
 `tools/scene/bake_models.py`). The Android UI is drawn into a SurfaceTexture; the controller ray (Pico `XR_BD_controller_interaction`
 or Khronos simple controller) is converted to touch events. The scene runs only while a launcher activity is resumed, so
 launching a game pauses it and the game gets the headset's own OpenXR runtime. Not yet run on a headset.
+
+## Oculus Go (VrApi) and Pico G2
+- `:olfx-go` (APK `org.olfx.launcher.go`, minSdk 24, armeabi-v7a + arm64): the same launcher UI as a floating window in the
+  same CC0 living room, rendered through the Meta Mobile SDK **VrApi 1.9.0** (`tools/olfx_scene/olfx_go.cpp`, written to the
+  "Android VR life cycle" sample in `VrApi.h`). Go remote = 3-DoF pointer; trigger/touchpad = touch. No Monado runtime,
+  hands or APK patcher in this build. Headers/`libvrapi.so` are fetched by `tools/go/fetch_vrapi.sh` (Meta SDK files, not in git).
+- **Pico G2: not built.** Pico's Native SDK (`PvrSDK-Native-release.aar`, `VRActivity`, API 24+, `pvr.app.type=vr`;
+  docs at sdk.picovr.com/docs/NativeSDK) is not publicly downloadable. Put the AAR in `olfx-go/libs/` (or send it) to add a G2 backend.
+- Not run on a Go headset yet; `com.samsung.android.vr.application.mode=vr_only` and the VR category come from the
+  Mobile-SDK-era sample manifests, not from a doc page I could fetch.

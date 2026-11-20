@@ -107,7 +107,7 @@ class DetailActivity : AppCompatActivity() {
         if (!::entry.isInitialized) return
         if (!isPackagePresent()) { finish(); return }
         if (::playBtn.isInitialized && launchAnimation == null) playBtn.isEnabled = true
-        if (awaitingInstallPermission && packageManager.canRequestPackageInstalls()) {
+        if (awaitingInstallPermission && canInstallPackages()) {
             awaitingInstallPermission = false
             pendingApk?.let { installPending(it) }
         }
@@ -258,7 +258,7 @@ class DetailActivity : AppCompatActivity() {
     }
 
     private fun installPending(apk: java.io.File) {
-        if (!packageManager.canRequestPackageInstalls()) {
+        if (!canInstallPackages()) {
             awaitingInstallPermission = true
             AlertDialog.Builder(this)
                 .setTitle(R.string.install_permission_title)

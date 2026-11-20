@@ -378,7 +378,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun install(apk: java.io.File) {
-        if (!packageManager.canRequestPackageInstalls()) {
+        if (!canInstallPackages()) {
             awaitingInstallPermission = true
             readyApk = apk
             androidx.appcompat.app.AlertDialog.Builder(this)
@@ -408,7 +408,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         window.decorView.post { SceneHost.attach(this) }
         super.onResume()
-        if (awaitingInstallPermission && packageManager.canRequestPackageInstalls()) {
+        if (awaitingInstallPermission && canInstallPackages()) {
             awaitingInstallPermission = false
             readyApk?.let { install(it) }
         }

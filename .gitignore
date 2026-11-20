@@ -153,3 +153,4 @@ local.properties
 .gradle/
 build/
 /tools/joybridge/out/
+build/

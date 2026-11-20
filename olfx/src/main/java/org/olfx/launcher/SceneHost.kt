@@ -45,14 +45,18 @@ object SceneHost {
 
     @JvmStatic external fun nativeRun(activity: Activity, assets: android.content.res.AssetManager, loaderPath: String)
     @JvmStatic external fun nativeStop()
+    @JvmStatic external fun nativeRunGo(activity: Activity, surface: Surface, assets: android.content.res.AssetManager)
+    @JvmStatic external fun nativeStopGo()
+    private var goView: android.view.SurfaceView? = null
 
-    fun supported(): Boolean = Headset.current == HeadsetKind.PICO_4 || Headset.current == HeadsetKind.PICO_NEO3
+    fun supported(): Boolean = Headset.current == HeadsetKind.PICO_4 || Headset.current == HeadsetKind.PICO_NEO3 || Headset.current == HeadsetKind.OCULUS_GO
 
     fun attach(activity: Activity) {
         if (!supported()) return
         synchronized(this) {
             detachLocked()
             val view = activity.findViewById<View>(android.R.id.content) ?: return
+            if (Headset.current == HeadsetKind.OCULUS_GO) { attachGo(activity, view); return }
             val loader = extractLoader(activity) ?: return
             if (!loaded) {
                 try { System.loadLibrary("olfx_scene"); loaded = true } catch (t: Throwable) { return }
@@ -65,12 +69,44 @@ object SceneHost {
         }
     }
 
+    /** Oculus Go: VrApi needs a window surface; a 1 px SurfaceView provides it while the content view is drawn into the panel. */
+    private fun attachGo(activity: Activity, view: View) {
+        if (!loaded) {
+            try { System.loadLibrary("olfx_go"); loaded = true } catch (t: Throwable) { return }
+        }
+        root = view
+        val sv = android.view.SurfaceView(activity)
+        sv.holder.addCallback(object : android.view.SurfaceHolder.Callback {
+            override fun surfaceCreated(h: android.view.SurfaceHolder) {
+                val t = Thread({ nativeRunGo(activity, h.surface, activity.assets) }, "olfx-scene-go")
+                thread = t
+                t.start()
+            }
+            override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, hh: Int) {}
+            override fun surfaceDestroyed(h: android.view.SurfaceHolder) { synchronized(this@SceneHost) { stopGoThread() } }
+        })
+        goView = sv
+        activity.addContentView(sv, android.widget.FrameLayout.LayoutParams(1, 1))
+        main.post(draw)
+    }
+
+    private fun stopGoThread() {
+        if (loaded) { try { nativeStopGo() } catch (_: UnsatisfiedLinkError) { } }
+        thread?.let { try { it.join(2000) } catch (_: InterruptedException) { } }
+        thread = null
+    }
+
     fun detach() = synchronized(this) { detachLocked() }
 
     private fun detachLocked() {
         main.removeCallbacks(draw)
         root = null
-        if (loaded) nativeStop()
+        goView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
+        goView = null
+        if (loaded) {
+            try { nativeStop() } catch (_: UnsatisfiedLinkError) { }
+            try { nativeStopGo() } catch (_: UnsatisfiedLinkError) { }
+        }
         thread?.let { try { it.join(2000) } catch (_: InterruptedException) { } }
         thread = null
         try { surface?.release(); texture?.release() } catch (_: Throwable) { }

@@ -1,0 +1,56 @@
+// OLFX launcher for Oculus Go (Android 7.1, API 25): the same launcher UI shown as a floating window in the
+// living-room scene through the Meta Mobile SDK VrApi. No Monado runtime (needs API 26), no camera hands, no patcher.
+// Needs build/vrapi (run tools/go/fetch_vrapi.sh first).
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+}
+
+android {
+    namespace 'org.freedesktop.monado.openxr_runtime'   // the launcher sources import this R
+    compileSdk project.sharedCompileSdk
+    ndkVersion "${ndk_version}"
+
+    defaultConfig {
+        applicationId 'org.olfx.launcher.go'
+        minSdkVersion 24
+        targetSdkVersion 28
+        versionCode 1
+        versionName '0.1.0'
+        ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
+        externalNativeBuild {
+            cmake {
+                arguments "-DOLFX_GO_BUILD=ON", "-DOLFX_VRAPI_DIR=${rootDir}/build/vrapi", "-DANDROID_STL=c++_static"
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path 'CMakeLists.txt'
+            version "${cmake_version}"
+        }
+    }
+    sourceSets {
+        main {
+            java.srcDirs = ["${rootDir}/olfx/src/main/java"]
+            res.srcDirs = ["${rootDir}/src/xrt/targets/openxr_android/src/main/res"]
+            assets.srcDirs = ["${rootDir}/src/xrt/targets/openxr_android/src/main/assets"]
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = '17' }
+    lint { abortOnError false }
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.constraintlayout:constraintlayout:$androidxConstraintLayoutVersion"
+    implementation "com.google.android.material:material:$materialVersion"
+    implementation "androidx.cardview:cardview:$androidxCardViewVersion"
+    implementation "androidx.recyclerview:recyclerview:$androidxRecyclerViewVersion"
+    implementation "com.android.tools.build:apksig:8.6.0"
+}

@@ -45,4 +45,7 @@ include ':src:xrt:targets:android_common'
 // by default.
 include ':src:xrt:targets:openxr_android'
 
+// OLFX launcher for Oculus Go (VrApi, API 24+). Needs build/vrapi from tools/go/fetch_vrapi.sh.
+include ':olfx-go'
+
 // OLFX launcher sources are compiled into :src:xrt:targets:openxr_android (one app: launcher + Monado)

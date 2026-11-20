@@ -22,3 +22,20 @@ jobs:
         with:
           name: OLFX-android-debug
           path: src/xrt/targets/openxr_android/build/outputs/apk/outOfProcess/debug/*.apk
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1"
+      - run: sudo apt-get update && sudo apt-get install -y glslang-tools
+      - uses: gradle/actions/setup-gradle@v4
+      - run: sh tools/go/fetch_vrapi.sh build/vrapi
+      - run: ./gradlew :olfx-go:assembleDebug --no-daemon
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OLFX-go-debug
+          path: olfx-go/build/outputs/apk/debug/*.apk
