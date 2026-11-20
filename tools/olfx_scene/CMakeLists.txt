@@ -1,5 +1,11 @@
 # OLFX: CC0 living-room scene. Pico (OpenXR) backend always; Oculus Go (VrApi) backend when OLFX_VRAPI_DIR is set.
-if(OLFX_GO_BUILD)
+if(OLFX_G2_BUILD)
+    # Pico G2 APK: Pico Native SDK (VRActivity) drives the frame loop; we only draw the scene.
+    add_library(olfx_g2 SHARED olfx_g2.cpp)
+    set_target_properties(olfx_g2 PROPERTIES CXX_STANDARD 17)
+    target_compile_definitions(olfx_g2 PRIVATE OLFX_HOST_CLASS="org/olfx/g2/G2Host")
+    target_link_libraries(olfx_g2 PRIVATE EGL GLESv3 android log)
+elseif(OLFX_GO_BUILD)
     # Oculus Go APK: needs the Meta Mobile SDK VrApi headers + libvrapi.so (fetched by tools/go/fetch_vrapi.sh, not in git)
     add_library(olfx_go SHARED olfx_go.cpp)
     set_target_properties(olfx_go PROPERTIES CXX_STANDARD 17)

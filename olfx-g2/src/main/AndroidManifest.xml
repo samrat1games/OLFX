@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OLFX launcher for Pico G2. Manifest requirements from the Pico Native SDK docs, chapter 3. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.INJECT_EVENTS" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <application android:allowBackup="false" android:label="OLFX"
+        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" tools:ignore="GoogleAppIndexingWarning">
+        <meta-data android:name="pvr.app.type" android:value="vr" />
+        <activity android:name=".G2Activity" android:exported="true" android:launchMode="singleTask"
+            android:screenOrientation="landscape" android:resizeableActivity="false"
+            android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

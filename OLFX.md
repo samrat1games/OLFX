@@ -176,3 +176,9 @@ launching a game pauses it and the game gets the headset's own OpenXR runtime. N
   docs at sdk.picovr.com/docs/NativeSDK) is not publicly downloadable. Put the AAR in `olfx-go/libs/` (or send it) to add a G2 backend.
 - Not run on a Go headset yet; `com.samsung.android.vr.application.mode=vr_only` and the VR category come from the
   Mobile-SDK-era sample manifests, not from a doc page I could fetch.
+
+### Pico G2 (`:olfx-g2`, `org.olfx.launcher.g2`)
+Built on Pico's Native SDK 2.8.5.4 (`olfx-g2/libs/PvrSDK-Native-release.aar`, Pico's proprietary SDK, supplied by the
+project owner). `G2Activity extends VRActivity implements RenderInterface`; the SDK calls `onFrameBegin/onDrawEye` and
+`libolfx_g2` draws the same CC0 living room. The launcher is a simple 4x2 tile panel of installed apps (not the full
+Material launcher). Input is a **head-gaze pointer + any confirm key**; the G2 controller API is not used. Not run on a G2.

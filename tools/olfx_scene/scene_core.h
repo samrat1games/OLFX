@@ -20,6 +20,9 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
+#ifndef OLFX_HOST_CLASS
+#define OLFX_HOST_CLASS "org/olfx/launcher/SceneHost"
+#endif
 static std::atomic<bool> g_stop{false};
 static JavaVM *g_vm;
 static jclass g_host;
@@ -27,7 +30,7 @@ static jmethodID m_panelCreate, m_panelUpdate, m_pointer;
 
 static void bindHost(JNIEnv *env) {
     env->GetJavaVM(&g_vm);
-    jclass c = env->FindClass("org/olfx/launcher/SceneHost"); g_host = (jclass)env->NewGlobalRef(c);
+    jclass c = env->FindClass(OLFX_HOST_CLASS); g_host = (jclass)env->NewGlobalRef(c);
     m_panelCreate = env->GetStaticMethodID(g_host, "panelCreate", "(I)V");
     m_panelUpdate = env->GetStaticMethodID(g_host, "panelUpdate", "([F)V");
     m_pointer = env->GetStaticMethodID(g_host, "onPointer", "(FFI)V");

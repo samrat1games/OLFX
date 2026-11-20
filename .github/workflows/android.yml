@@ -39,3 +39,19 @@ jobs:
         with:
           name: OLFX-go-debug
           path: olfx-go/build/outputs/apk/debug/*.apk
+  g2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1"
+      - run: sudo apt-get update && sudo apt-get install -y glslang-tools
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew :olfx-g2:assembleDebug --no-daemon
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OLFX-g2-debug
+          path: olfx-g2/build/outputs/apk/debug/*.apk
