@@ -79,6 +79,8 @@ dependencies {
 
     // OLFX: camera hand tracking (hand landmark model)
     implementation "com.google.mediapipe:tasks-vision:0.10.32"
+    // OLFX: ONNX Runtime (NNAPI/NPU) backend for RTMDet/RTMPose hands
+    implementation "com.microsoft.onnxruntime:onnxruntime-android:1.20.0"
 
     // for Hilt dependency injection
     api "com.google.dagger:hilt-android:$hiltVersion"

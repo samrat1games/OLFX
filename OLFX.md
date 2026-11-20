@@ -143,3 +143,9 @@ OculusXR discovery path, hand-tracking alignment/test, restored Play flow and SB
   buttons keep working and the IMU entry point is simply skipped.
 - `olfx_device_profile.c`: identifies Oculus Go, Pico G2, Neo 3 and Pico 4 from Build strings. Not wired in yet.
 - Test: `cc -std=c11 -Ithird_party/ovrplugin-openxr-shim/shim/src tests/olfx/test_joycon_imu.c third_party/ovrplugin-openxr-shim/shim/src/{joycon_imu,olfx_device_profile}.c -lm -o /tmp/t && /tmp/t`
+
+## ONNX Runtime hand backend (unverified on device)
+`OnnxHandBackend` (RTMPose-hand, SimCC decoded by the host-tested `SimccDecoder`) runs on ONNX Runtime with
+NNAPI (NPU) → XNNPACK → CPU. It activates only if `files/olfx_models/rtmpose_hand.onnx` exists; it is **not yet
+called by `OlfxHands`**, which still uses MediaPipe. RTMDet detection, crop/affine preprocessing and Pico/Go
+runtime hooks are not implemented. No model files are bundled.
