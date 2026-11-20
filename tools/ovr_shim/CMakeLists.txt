@@ -15,6 +15,8 @@ add_library(ovrplugin_compat MODULE
     ${OLFX_OVR_UPSTREAM}/src/passthru.c
     ${OLFX_OVR_UPSTREAM}/src/olfx_hands.c
     ${OLFX_OVR_UPSTREAM}/src/joycon.c
+    ${OLFX_OVR_UPSTREAM}/src/joycon_imu.c
+    ${OLFX_OVR_UPSTREAM}/src/olfx_device_profile.c
     ${OLFX_OVR_UPSTREAM}/src/gl_session.c
     ${OLFX_OVR_UPSTREAM}/src/olfx_extra_stubs.c
 )

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "xr_runtime.h"
+#include "joycon_imu.h"
 
 #ifdef __ANDROID__
 #include <jni.h>
@@ -24,6 +25,25 @@ extern void *xrr_android_activity(void);
 static volatile uint32_t s_keys[3];
 static volatile float s_ax[3][6];
 static volatile int s_seen;
+static olfx_imu s_imu[3];
+static volatile int s_imu_seen[3];
+static volatile int s_imu_init;
+
+static void JNICALL native_imu(JNIEnv *env, jclass c, jint role, jfloat gx, jfloat gy, jfloat gz, jfloat ax, jfloat ay,
+                               jfloat az, jlong ts) {
+    (void)env; (void)c;
+    if (role < 0 || role > 2) return;
+    if (!s_imu_init) { for (int i = 0; i < 3; i++) olfx_imu_init(&s_imu[i]); s_imu_init = 1; }
+    olfx_imu_update(&s_imu[role], gx, gy, gz, ax, ay, az, ts);
+    s_imu_seen[role] = 1;
+}
+
+/* Fused Joy-Con orientation (role 1 = left, 2 = right, 0 = paired pad). Returns 0 until IMU samples arrive. */
+int xrr_joy_orientation(int role, float q[4]) {
+    if (role < 0 || role > 2 || !s_imu_seen[role]) return 0;
+    q[0] = s_imu[role].q.w; q[1] = s_imu[role].q.x; q[2] = s_imu[role].q.y; q[3] = s_imu[role].q.z;
+    return 1;
+}
 
 static int keybit(int code) {
     switch (code) {
@@ -80,6 +100,10 @@ void xrr_joy_poll(void) {
         {"nativeAxes", "(IFFFFFF)V", (void *)native_axes},
     };
     if ((*env)->RegisterNatives(env, bridge, nms, 2) != 0) { (*env)->ExceptionClear(env); XRRLOG("joycon: RegisterNatives failed"); return; }
+    {   // IMU entry point exists only in a dex built from the current JoyBridge.java; an older dex just lacks it.
+        JNINativeMethod imu = {"nativeImu", "(IFFFFFFJ)V", (void *)native_imu};
+        if ((*env)->RegisterNatives(env, bridge, &imu, 1) != 0) { (*env)->ExceptionClear(env); XRRLOG("joycon: no IMU entry point (old dex)"); }
+    }
     jmethodID inst = (*env)->GetStaticMethodID(env, bridge, "install", "(Landroid/app/Activity;)V"); CHK
     (*env)->CallStaticVoidMethod(env, bridge, inst, act); CHK
     s_installed = 1;
@@ -117,6 +141,7 @@ void xrr_joy_merge(uint32_t *buttons, float *lt, float *rt, float *lg, float *rg
 }
 #else
 void xrr_joy_poll(void) {}
+int xrr_joy_orientation(int role, float q[4]) { (void)role; (void)q; return 0; }
 void xrr_joy_merge(uint32_t *buttons, float *lt, float *rt, float *lg, float *rg, float *lsx, float *lsy, float *rsx, float *rsy) {
     (void)buttons; (void)lt; (void)rt; (void)lg; (void)rg; (void)lsx; (void)lsy; (void)rsx; (void)rsy;
 }

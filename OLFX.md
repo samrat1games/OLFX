@@ -134,3 +134,12 @@ OculusXR discovery path, hand-tracking alignment/test, restored Play flow and SB
 - The hand test now includes a real OpenXR client probe (`xrCreateHandTrackerEXT` /
   `xrLocateHandJointsEXT`) and reports active hands/joint counts. APK markers record loader routing so a
   runtime change cannot leave an old Meta loader installed unnoticed.
+
+## Joy-Con IMU and device profiles (host-tested only)
+- `joycon_imu.c`: gyro + accelerometer complementary filter. `JoyBridge.java` feeds it from
+  `InputDevice.getSensorManager()` (Android 12+); `xrr_joy_orientation()` returns the fused quaternion.
+  It is **not yet used to drive controller poses**, and `joy_dex.h` must be regenerated from
+  `tools/joybridge` (needs the Android SDK `d8`) for the Java side to take effect; with the old dex the
+  buttons keep working and the IMU entry point is simply skipped.
+- `olfx_device_profile.c`: identifies Oculus Go, Pico G2, Neo 3 and Pico 4 from Build strings. Not wired in yet.
+- Test: `cc -std=c11 -Ithird_party/ovrplugin-openxr-shim/shim/src tests/olfx/test_joycon_imu.c third_party/ovrplugin-openxr-shim/shim/src/{joycon_imu,olfx_device_profile}.c -lm -o /tmp/t && /tmp/t`
