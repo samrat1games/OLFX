@@ -7,6 +7,24 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+static M4 fromPose(const XrPosef &p) {
+    float x = p.orientation.x, y = p.orientation.y, z = p.orientation.z, w = p.orientation.w;
+    M4 r = ident();
+    r.m[0] = 1 - 2 * (y * y + z * z); r.m[1] = 2 * (x * y + z * w); r.m[2] = 2 * (x * z - y * w);
+    r.m[4] = 2 * (x * y - z * w); r.m[5] = 1 - 2 * (x * x + z * z); r.m[6] = 2 * (y * z + x * w);
+    r.m[8] = 2 * (x * z + y * w); r.m[9] = 2 * (y * z - x * w); r.m[10] = 1 - 2 * (x * x + y * y);
+    r.m[12] = p.position.x; r.m[13] = p.position.y; r.m[14] = p.position.z;
+    return r;
+}
+static M4 projection(const XrFovf &f, float n, float fa) {
+    float l = tanf(f.angleLeft), r = tanf(f.angleRight), u = tanf(f.angleUp), d = tanf(f.angleDown);
+    M4 p{};
+    p.m[0] = 2 / (r - l); p.m[5] = 2 / (u - d); p.m[8] = (r + l) / (r - l); p.m[9] = (u + d) / (u - d);
+    p.m[10] = -(fa + n) / (fa - n); p.m[11] = -1; p.m[14] = -2 * fa * n / (fa - n);
+    return p;
+}
+
+
 // ---------------- OpenXR via dlopen ----------------
 static PFN_xrGetInstanceProcAddr xrGIPA;
 #define XR_FUNCS(X) X(xrCreateInstance) X(xrDestroyInstance) X(xrGetSystem) X(xrCreateSession) X(xrDestroySession) \

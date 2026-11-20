@@ -50,29 +50,12 @@ static M4 mul(const M4 &a, const M4 &b) {
 static M4 translate(float x, float y, float z) { M4 r = ident(); r.m[12] = x; r.m[13] = y; r.m[14] = z; return r; }
 static M4 scale(float x, float y, float z) { M4 r = ident(); r.m[0] = x; r.m[5] = y; r.m[10] = z; return r; }
 static M4 rotY(float a) { M4 r = ident(); r.m[0] = cosf(a); r.m[2] = -sinf(a); r.m[8] = sinf(a); r.m[10] = cosf(a); return r; }
-static M4 fromPose(const XrPosef &p) {
-    float x = p.orientation.x, y = p.orientation.y, z = p.orientation.z, w = p.orientation.w;
-    M4 r = ident();
-    r.m[0] = 1 - 2 * (y * y + z * z); r.m[1] = 2 * (x * y + z * w); r.m[2] = 2 * (x * z - y * w);
-    r.m[4] = 2 * (x * y - z * w); r.m[5] = 1 - 2 * (x * x + z * z); r.m[6] = 2 * (y * z + x * w);
-    r.m[8] = 2 * (x * z + y * w); r.m[9] = 2 * (y * z - x * w); r.m[10] = 1 - 2 * (x * x + y * y);
-    r.m[12] = p.position.x; r.m[13] = p.position.y; r.m[14] = p.position.z;
-    return r;
-}
 static M4 rigidInverse(const M4 &a) {
     M4 r = ident();
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) r.m[j * 4 + i] = a.m[i * 4 + j];
     for (int i = 0; i < 3; i++) r.m[12 + i] = -(r.m[i] * a.m[12] + r.m[4 + i] * a.m[13] + r.m[8 + i] * a.m[14]);
     return r;
 }
-static M4 projection(const XrFovf &f, float n, float fa) {
-    float l = tanf(f.angleLeft), r = tanf(f.angleRight), u = tanf(f.angleUp), d = tanf(f.angleDown);
-    M4 p{};
-    p.m[0] = 2 / (r - l); p.m[5] = 2 / (u - d); p.m[8] = (r + l) / (r - l); p.m[9] = (u + d) / (u - d);
-    p.m[10] = -(fa + n) / (fa - n); p.m[11] = -1; p.m[14] = -2 * fa * n / (fa - n);
-    return p;
-}
-
 // ---------------- GL ----------------
 static GLuint compile(GLenum t, const char *src) {
     GLuint s = glCreateShader(t); glShaderSource(s, 1, &src, nullptr); glCompileShader(s);

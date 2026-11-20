@@ -18,6 +18,9 @@ android {
         versionCode 1
         versionName '0.1.0'
         ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
+        resValue "string", "monado_lib_version", "go-0.1.0"
+        resValue "string", "qr", "QR"
+        resValue "string", "app_name", "OLFX"
         externalNativeBuild {
             cmake {
                 arguments "-DOLFX_GO_BUILD=ON", "-DOLFX_VRAPI_DIR=${rootDir}/build/vrapi", "-DANDROID_STL=c++_static"
