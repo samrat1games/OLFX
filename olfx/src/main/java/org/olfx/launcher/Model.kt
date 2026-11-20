@@ -159,7 +159,7 @@ class Prefs(ctx: Context) {
 
     /** Camera hand tracking on/off (read by the Monado service through the broker provider). */
     var handEnabled: Boolean
-        get() = sp.getBoolean("hand_enabled", true)
+        get() = sp.getBoolean("hand_enabled", !Headset.isHeadset) // headsets have their own tracking; no phone rear camera
         set(v) {
             sp.edit().putBoolean("hand_enabled", v).apply()
             notifyHands()

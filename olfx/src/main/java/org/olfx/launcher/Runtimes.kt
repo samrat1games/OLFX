@@ -46,6 +46,7 @@ internal object RuntimePolicy {
         appChoice: String?,
         defaultChoice: String?,
         cameraHands: Boolean = false,
+        headset: Boolean = false,
     ): RuntimeInfo? {
         if (runtimes.isEmpty()) return null
         fun byKind(kind: Kind) = runtimes.firstOrNull { it.kind == kind }
@@ -71,6 +72,11 @@ internal object RuntimePolicy {
             byKind(Kind.OCULUS)?.let { return it }
         }
         if (pico) byKind(Kind.PICO)?.let { return it }
+        // On a standalone headset the system's own OpenXR runtime owns the display and tracking;
+        // the built-in Monado runtime (phone display + phone sensors) is only the last resort.
+        if (headset) {
+            (byKind(Kind.PICO) ?: byKind(Kind.OCULUS) ?: runtimes.firstOrNull { it.kind == Kind.OTHER })?.let { return it }
+        }
 
         return runtimes.firstOrNull { it.pkg == ownPackage } ?: byKind(Kind.MONADO) ?: runtimes.first()
     }
@@ -190,6 +196,7 @@ object Runtimes {
             callingPkg?.let { prefsApp(ctx, it) },
             Prefs(ctx).defaultRuntime,
             Prefs(ctx).handEnabled,
+            Headset.isHeadset,
         )
     }
 

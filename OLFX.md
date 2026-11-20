@@ -150,3 +150,12 @@ OculusXR discovery path, hand-tracking alignment/test, restored Play flow and SB
 - **Device profiles.** `olfx_device_profile.c` identifies Oculus Go, Pico G2, Neo 3 and Pico 4; the result is logged at
   load. It does not change behaviour; Pico/Go specific runtime paths are not implemented.
 - Tests: `cc -std=c11 -Ithird_party/ovrplugin-openxr-shim/shim/src tests/olfx/test_joycon_imu.c third_party/ovrplugin-openxr-shim/shim/src/{joycon_imu,olfx_device_profile}.c -lm`; Java tests compile with the ORT host jar.
+
+## Running OLFX on headsets (Pico / Oculus Go) — status
+- `Headset.kt` identifies Oculus Go, Pico G2, Neo 3 and Pico 4. On a headset: camera hand tracking defaults **off**
+  (no phone rear camera; the headset has its own tracking) and runtime *Auto* prefers the system's own OpenXR
+  runtime (Pico / OculusXR / other) over the built-in phone-oriented Monado. JVM tests: `HeadsetTest`.
+- **Known blocker for Oculus Go and Pico G2:** they run Android 7.1 (API 25) but `sharedMinSdk = 26`, and the Monado
+  runtime needs `AHardwareBuffer` (API 26). The APK will not install there. Lowering minSdk needs a launcher-only
+  build without the Monado runtime; not done.
+- Pico 4 / Neo 3 (Android 10/12): installable; the launcher runs as a 2D panel. Not yet run on a headset.
