@@ -103,6 +103,7 @@ class DetailActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        window.decorView.post { SceneHost.attach(this) }
         if (!::entry.isInitialized) return
         if (!isPackagePresent()) { finish(); return }
         if (::playBtn.isInitialized && launchAnimation == null) playBtn.isEnabled = true
@@ -115,6 +116,7 @@ class DetailActivity : AppCompatActivity() {
     override fun onPause() {
         launchAnimation?.cancel()
         launchAnimation = null
+        SceneHost.detach()
         super.onPause()
     }
 

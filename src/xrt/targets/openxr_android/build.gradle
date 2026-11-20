@@ -267,7 +267,7 @@ android {
         flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_AIM_FB=ON"
         flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_CAPSULES_FB=ON"
         flavor.externalNativeBuild.cmake.arguments += "-DXRT_FEATURE_OPENXR_HAND_TRACKING_MESH_FB=ON"
-        flavor.externalNativeBuild.cmake.targets "openxr_monado", "monado-service", "ovrplugin_compat"
+        flavor.externalNativeBuild.cmake.targets "openxr_monado", "monado-service", "ovrplugin_compat", "olfx_scene"
         flavor.buildConfigField "boolean", "inProcess", "false"
         flavor.resValue "string", "app_name", appName
     }

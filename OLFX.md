@@ -159,3 +159,10 @@ OculusXR discovery path, hand-tracking alignment/test, restored Play flow and SB
   runtime needs `AHardwareBuffer` (API 26). The APK will not install there. Lowering minSdk needs a launcher-only
   build without the Monado runtime; not done.
 - Pico 4 / Neo 3 (Android 10/12): installable; the launcher runs as a 2D panel. Not yet run on a headset.
+
+## Pico 4 / Neo 3 launcher scene (compile-tested in CI only)
+`tools/olfx_scene/olfx_scene.cpp` is a native OpenXR (GLES3) app loaded by `SceneHost.kt`. It shows the launcher as a
+1.6 x 0.9 m floating window in a living room built from CC0 Poly Haven props (`tools/scene/CREDITS.md`,
+`tools/scene/bake_models.py`). The Android UI is drawn into a SurfaceTexture; the controller ray (Pico `XR_BD_controller_interaction`
+or Khronos simple controller) is converted to touch events. The scene runs only while a launcher activity is resumed, so
+launching a game pauses it and the game gets the headset's own OpenXR runtime. Not yet run on a headset.

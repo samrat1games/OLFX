@@ -619,6 +619,7 @@ add_subdirectory(doc)
 
 if(ANDROID AND XRT_FEATURE_SERVICE)
 	add_subdirectory(tools/ovr_shim)
+	add_subdirectory(tools/olfx_scene)
 endif()
 
 if(BUILD_TESTING)

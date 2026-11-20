@@ -400,7 +400,13 @@ class MainActivity : AppCompatActivity() {
         androidx.appcompat.app.AlertDialog.Builder(this).setTitle(R.string.error_title).setMessage(e.message ?: e.toString()).setPositiveButton(R.string.ok, null).show()
     }
 
+    override fun onPause() {
+        SceneHost.detach()
+        super.onPause()
+    }
+
     override fun onResume() {
+        window.decorView.post { SceneHost.attach(this) }
         super.onResume()
         if (awaitingInstallPermission && packageManager.canRequestPackageInstalls()) {
             awaitingInstallPermission = false
