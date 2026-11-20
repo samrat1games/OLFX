@@ -173,6 +173,14 @@ class Prefs(ctx: Context) {
             notifyHands()
         }
 
+    /** Opt-in ONNX Runtime (RTMDet + RTMPose, NPU via NNAPI) hand backend instead of MediaPipe. */
+    var handOnnx: Boolean
+        get() = sp.getBoolean("hand_onnx", false)
+        set(v) {
+            sp.edit().putBoolean("hand_onnx", v).apply()
+            notifyHands()
+        }
+
     /** "screen" (normal touch) or "pinch" (hand-tracking pinch injects a tap). */
     var clickMode: String
         get() = ClickMode.normalize(sp.getString("click_mode", ClickMode.SCREEN))

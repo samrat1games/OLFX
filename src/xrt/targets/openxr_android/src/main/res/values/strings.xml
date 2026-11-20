@@ -61,6 +61,8 @@
     <string name="camera_denied">Not allowed yet: games will not see your hands.</string>
     <string name="swap_hands">Swap left and right</string>
     <string name="swap_hands_description">Turn on if your left hand shows up as the right one</string>
+    <string name="onnx_hands">ONNX hand tracking (NPU)</string>
+    <string name="onnx_hands_description">Experimental: RTMDet + RTMPose on ONNX Runtime. Downloads about 60 MB on first use; MediaPipe is used until then</string>
     <string name="tips">Tips</string>
     <string name="hands_tips">Put the phone in the headset and hold your hands in front of the rear camera, 30 to 60 cm away, in good light. An open palm is picked up fastest. Restart the game after changing a setting.</string>
     <string name="cancel">Cancel</string>

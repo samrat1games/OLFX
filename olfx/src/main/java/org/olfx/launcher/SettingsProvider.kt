@@ -45,8 +45,12 @@ class SettingsProvider : ContentProvider() {
         return when (route) {
             SettingsRoute.PROFILE -> cursor(projection, arrayOf("scale"), mapOf("scale" to prefs.currentScale))
             SettingsRoute.HANDS -> cursor(
-                projection, arrayOf("enabled", "swap"),
-                mapOf("enabled" to if (prefs.handEnabled) 1 else 0, "swap" to if (prefs.handSwap) 1 else 0),
+                projection, arrayOf("enabled", "swap", "onnx"),
+                mapOf(
+                    "enabled" to if (prefs.handEnabled) 1 else 0,
+                    "swap" to if (prefs.handSwap) 1 else 0,
+                    "onnx" to if (prefs.handOnnx) 1 else 0,
+                ),
             )
             SettingsRoute.DISPLAY -> cursor(projection, arrayOf("sbs"), mapOf("sbs" to if (prefs.sbsEnabled) 1 else 0))
             SettingsRoute.GAME -> cursor(projection, arrayOf("package"), mapOf("package" to prefs.currentGame))

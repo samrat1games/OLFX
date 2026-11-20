@@ -16,6 +16,9 @@
 
 #ifdef __ANDROID__
 #include <jni.h>
+#include <sys/system_properties.h>
+#include "olfx_device_profile.h"
+#include "log.h"
 #define XR_USE_PLATFORM_ANDROID
 #include <openxr/openxr_platform.h>
 
@@ -27,6 +30,14 @@ static int g_realActivitySet;
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
     (void)reserved;
     g_vm = vm;
+    {   /* OLFX: identify Oculus Go / Pico G2 / Neo 3 / Pico 4 for logs and policy */
+        char mf[PROP_VALUE_MAX] = "", md[PROP_VALUE_MAX] = "", dv[PROP_VALUE_MAX] = "";
+        __system_property_get("ro.product.manufacturer", mf);
+        __system_property_get("ro.product.model", md);
+        __system_property_get("ro.product.device", dv);
+        const olfx_device_profile *dp = olfx_device_identify(mf, md, dv);
+        XRRLOG("device profile: %s (%d-DoF, vrapi=%d, pico_sdk=%d) [%s/%s/%s]", dp->name, dp->dof, dp->has_vrapi, dp->pico_sdk, mf, md, dv);
+    }
     return JNI_VERSION_1_6;
 }
 

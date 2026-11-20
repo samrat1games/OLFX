@@ -238,6 +238,7 @@ class MainActivity : AppCompatActivity() {
 
         col.addView(card(C.SURFACE) {
             addView(switchRow(getString(R.string.swap_hands), getString(R.string.swap_hands_description), C.MUTED, C.TEXT, prefs.handSwap) { prefs.handSwap = it })
+            addView(switchRow(getString(R.string.onnx_hands), getString(R.string.onnx_hands_description), C.MUTED, C.TEXT, prefs.handOnnx) { prefs.handOnnx = it })
         }, gap())
 
         col.addView(card(C.SURFACE) {

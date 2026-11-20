@@ -135,17 +135,18 @@ OculusXR discovery path, hand-tracking alignment/test, restored Play flow and SB
   `xrLocateHandJointsEXT`) and reports active hands/joint counts. APK markers record loader routing so a
   runtime change cannot leave an old Meta loader installed unnoticed.
 
-## Joy-Con IMU and device profiles (host-tested only)
-- `joycon_imu.c`: gyro + accelerometer complementary filter. `JoyBridge.java` feeds it from
-  `InputDevice.getSensorManager()` (Android 12+); `xrr_joy_orientation()` returns the fused quaternion.
-  It is **not yet used to drive controller poses**, and `joy_dex.h` must be regenerated from
-  `tools/joybridge` (needs the Android SDK `d8`) for the Java side to take effect; with the old dex the
-  buttons keep working and the IMU entry point is simply skipped.
-- `olfx_device_profile.c`: identifies Oculus Go, Pico G2, Neo 3 and Pico 4 from Build strings. Not wired in yet.
-- Test: `cc -std=c11 -Ithird_party/ovrplugin-openxr-shim/shim/src tests/olfx/test_joycon_imu.c third_party/ovrplugin-openxr-shim/shim/src/{joycon_imu,olfx_device_profile}.c -lm -o /tmp/t && /tmp/t`
-
-## ONNX Runtime hand backend (unverified on device)
-`OnnxHandBackend` (RTMPose-hand, SimCC decoded by the host-tested `SimccDecoder`) runs on ONNX Runtime with
-NNAPI (NPU) → XNNPACK → CPU. It activates only if `files/olfx_models/rtmpose_hand.onnx` exists; it is **not yet
-called by `OlfxHands`**, which still uses MediaPipe. RTMDet detection, crop/affine preprocessing and Pico/Go
-runtime hooks are not implemented. No model files are bundled.
+## ONNX hand backend, Joy-Con IMU, device profiles
+- **ONNX hand tracking (opt-in, Settings -> Hand Tracking -> "ONNX hand tracking (NPU)").** RTMDet-nano detects
+  hands, RTMPose-m (SimCC) gives 21 keypoints, on ONNX Runtime with NNAPI (NPU) -> XNNPACK -> CPU.
+  Models (OpenMMLab, Apache-2.0, ~60 MB) are downloaded once to `files/olfx_models/`; MediaPipe runs until they
+  exist and is the default. RTMPose is 2-D only, so hand depth within the palm is flat and handedness comes from
+  the image side. Tested on the host with the real models: model I/O contract, detection on a real hand photo,
+  rotation handling, geometry, SimCC decoding and zip extraction (`tests/olfx/java/`, ORT 1.20 host jar).
+  **Not yet run on an Android device** (NNAPI/NPU behaviour, speed and tracking quality are unmeasured).
+- **Joy-Con IMU.** `joycon_imu.c` fuses gyro + accel; `JoyBridge.java` feeds it via `InputDevice.getSensorManager()`
+  (Android 12+); `xr_input.c` uses it as a fallback controller orientation when that hand has no camera pose.
+  `joy_dex.h` must be regenerated from `tools/joybridge` with the Android SDK `d8`; with the old dex only buttons work.
+  Sensor-axis mapping is unverified on hardware.
+- **Device profiles.** `olfx_device_profile.c` identifies Oculus Go, Pico G2, Neo 3 and Pico 4; the result is logged at
+  load. It does not change behaviour; Pico/Go specific runtime paths are not implemented.
+- Tests: `cc -std=c11 -Ithird_party/ovrplugin-openxr-shim/shim/src tests/olfx/test_joycon_imu.c third_party/ovrplugin-openxr-shim/shim/src/{joycon_imu,olfx_device_profile}.c -lm`; Java tests compile with the ORT host jar.

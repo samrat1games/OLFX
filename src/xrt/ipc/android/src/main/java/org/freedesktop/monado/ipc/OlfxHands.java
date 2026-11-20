@@ -44,6 +44,7 @@ import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions;
 import com.google.mediapipe.tasks.vision.core.RunningMode;
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker;
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult;
+import java.io.File;
 import java.util.Collections;
 import java.util.List;
 
@@ -117,6 +118,9 @@ public final class OlfxHands {
     private CameraCaptureSession session;
     private ImageReader reader;
     private HandLandmarker landmarker;
+    /** ONNX Runtime RTMDet + RTMPose backend (opt-in); null means MediaPipe is used. */
+    private OnnxHandPipeline onnx;
+    private boolean onnxWanted = false;
     private int frameW = TARGET_W;
     private int frameH = TARGET_H;
     private float focalX = 415f;
@@ -187,6 +191,7 @@ public final class OlfxHands {
         }
         OlfxHands h = new OlfxHands(ctx, listener);
         h.swap = settings[1] == 1;
+        h.onnxWanted = settings[2] == 1;
         // Assign before posting initialization so stop()/settings changes cannot race a half-built instance.
         instance = h;
         h.openAsync();
@@ -199,12 +204,12 @@ public final class OlfxHands {
                                 android.net.Uri.parse("content://" + ctx.getPackageName() + ".settings/olfx/hands"),
                                 null, null, null, null)) {
             if (c != null && c.moveToFirst()) {
-                return new int[] {c.getInt(0), c.getInt(1)};
+                return new int[] {c.getInt(0), c.getInt(1), c.getColumnCount() > 2 ? c.getInt(2) : 0};
             }
         } catch (Throwable t) {
             Log.w(TAG, "OLFX hand settings unavailable: " + t);
         }
-        return new int[] {1, 0};
+        return new int[] {1, 0, 0};
     }
 
     public static synchronized void stop() {
@@ -266,9 +271,21 @@ public final class OlfxHands {
     private void initializeOnThread() throws Exception {
         if (!running) return;
         // CPU delegate is the stable default for VRMobile: it does not contend with the compositor GPU queue.
-        landmarker = createLandmarker();
-        if (landmarker == null) {
-            throw new IllegalStateException("model_unavailable");
+        if (onnxWanted) {
+            File dir = OnnxModelStore.dir(context);
+            onnx = OnnxHandPipeline.create(dir);
+            if (onnx != null) {
+                Log.i(TAG, "hand tracking: ONNX Runtime RTMDet+RTMPose on " + onnx.provider);
+            } else {
+                Log.w(TAG, "ONNX hand models not ready; using MediaPipe (downloading if needed)");
+                OnnxModelStore.ensureAsync(context);
+            }
+        }
+        if (onnx == null) {
+            landmarker = createLandmarker();
+            if (landmarker == null) {
+                throw new IllegalStateException("model_unavailable");
+            }
         }
         if (!running) return;
 
@@ -582,7 +599,7 @@ public final class OlfxHands {
         Image image = null;
         try {
             image = r.acquireLatestImage(); // drop stale frames; bounded latency, no queue growth
-            if (image == null || !running || landmarker == null) return;
+            if (image == null || !running || (landmarker == null && onnx == null)) return;
             long now = System.nanoTime();
             if (now - lastProcessNs < MIN_FRAME_INTERVAL_NS) return;
             lastProcessNs = now;
@@ -594,23 +611,53 @@ public final class OlfxHands {
             long ts = HandFrameClock.nextMediaPipeTimestampMs(lastTimestampMs, imageTimestampNs);
             lastTimestampMs = ts;
 
-            HandLandmarkerResult result;
             long took;
-            long tc = System.nanoTime();
-            try (MPImage mp = toMpImage(image)) {
+            List<List<NormalizedLandmark>> upright;
+            if (onnx != null) {
+                long tc = System.nanoTime();
+                fillRgba(image);
                 statConvNs += System.nanoTime() - tc;
-                // The model reads our RGBA buffer. Return the camera's YUV buffer before inference.
                 image.close();
                 image = null;
                 long t0 = System.nanoTime();
-                result = landmarker.detectForVideo(mp, imageProcessingOptions, ts);
+                List<OnnxHandPipeline.Hand> found = onnx.detect(rgba, width, height, rotationClockwise);
                 took = System.nanoTime() - t0;
+                statDetectNs += took;
+                upright = new java.util.ArrayList<>();
+                List<List<Landmark>> worldList = new java.util.ArrayList<>();
+                List<List<Category>> cats = new java.util.ArrayList<>();
+                for (OnnxHandPipeline.Hand hd : found) {
+                    List<NormalizedLandmark> pts = new java.util.ArrayList<>(21);
+                    List<Landmark> wl = new java.util.ArrayList<>(21);
+                    for (int i = 0; i < 21; i++) {
+                        pts.add(NormalizedLandmark.create(hd.upright[i][0], hd.upright[i][1], 0f));
+                        wl.add(Landmark.create(hd.world[i][0], hd.world[i][1], hd.world[i][2]));
+                    }
+                    upright.add(pts);
+                    worldList.add(wl);
+                    // RTMPose has no handedness: the rear camera is not mirrored, so the image side decides.
+                    cats.add(java.util.Collections.singletonList(Category.create(
+                            0.3f, 0, hd.upright[0][0] < 0.5f ? "Left" : "Right", "")));
+                }
+                publishData(upright, worldList, cats, imageTimestampNs);
+            } else {
+                HandLandmarkerResult result;
+                long tc = System.nanoTime();
+                try (MPImage mp = toMpImage(image)) {
+                    statConvNs += System.nanoTime() - tc;
+                    // The model reads our RGBA buffer. Return the camera's YUV buffer before inference.
+                    image.close();
+                    image = null;
+                    long t0 = System.nanoTime();
+                    result = landmarker.detectForVideo(mp, imageProcessingOptions, ts);
+                    took = System.nanoTime() - t0;
+                }
+                statDetectNs += took;
+                // MediaPipe's normalized output is still in the unrotated camera frame. Rotate it once;
+                // use the SAME upright points for the preview, tracking association and perspective fit.
+                upright = uprightLandmarks(result);
+                publish(result, upright, imageTimestampNs);
             }
-            statDetectNs += took;
-            // MediaPipe's normalized output is still in the unrotated camera frame. Rotate it once;
-            // use the SAME upright points for the preview, tracking association and perspective fit.
-            List<List<NormalizedLandmark>> upright = uprightLandmarks(result);
-            publish(result, upright, imageTimestampNs);
             frameFailures = 0;
 
             // Report processed-frame throughput, not the inverse of inference time.
@@ -662,6 +709,11 @@ public final class OlfxHands {
     }
 
     private MPImage toMpImage(Image image) {
+        fillRgba(image);
+        return new ByteBufferImageBuilder(rgba, image.getWidth(), image.getHeight(), MPImage.IMAGE_FORMAT_RGBA).build();
+    }
+
+    private void fillRgba(Image image) {
         final int w = image.getWidth();
         final int h = image.getHeight();
         if (rgba == null || rgba.capacity() != w * h * 4) {
@@ -678,7 +730,6 @@ public final class OlfxHands {
             throw new IllegalArgumentException("yuv_unsupported");
         }
         rgba.rewind();
-        return new ByteBufferImageBuilder(rgba, w, h, MPImage.IMAGE_FORMAT_RGBA).build();
     }
 
     private List<List<NormalizedLandmark>> uprightLandmarks(HandLandmarkerResult result) {
@@ -869,9 +920,12 @@ public final class OlfxHands {
     // ---- who is who ---------------------------------------------------------------------------------------------
 
     private void publish(HandLandmarkerResult result, List<List<NormalizedLandmark>> upright, long imageTimestampNs) {
+        publishData(upright, result.worldLandmarks(), result.handedness(), imageTimestampNs);
+    }
+
+    private void publishData(List<List<NormalizedLandmark>> upright, List<List<Landmark>> world,
+            List<List<Category>> hands, long imageTimestampNs) {
         List<List<NormalizedLandmark>> all = upright;
-        List<List<Landmark>> world = result.worldLandmarks();
-        List<List<Category>> hands = result.handedness();
         long now = System.nanoTime();
 
         int n = 0;
@@ -1316,9 +1370,11 @@ public final class OlfxHands {
         Runnable cleanup = () -> {
             try {
                 if (landmarker != null) landmarker.close();
+                if (onnx != null) onnx.close();
             } catch (Exception ignored) {
             }
             landmarker = null;
+            onnx = null;
             if (rawBitmap != null) {
                 rawBitmap.recycle();
                 rawBitmap = null;

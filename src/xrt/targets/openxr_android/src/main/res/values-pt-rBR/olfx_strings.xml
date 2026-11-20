@@ -55,6 +55,8 @@
     <string name="camera_denied">Ainda não permitido: os jogos não verão suas mãos.</string>
     <string name="swap_hands">Trocar esquerda e direita</string>
     <string name="swap_hands_description">Ative se a mão esquerda aparecer como direita</string>
+    <string name="onnx_hands">Rastreamento ONNX (NPU)</string>
+    <string name="onnx_hands_description">Experimental: RTMDet + RTMPose no ONNX Runtime. Baixa cerca de 60 MB no primeiro uso; o MediaPipe é usado até lá</string>
     <string name="tips">Dicas</string>
     <string name="hands_tips">Coloque o celular no headset e mantenha as mãos de 30 a 60 cm à frente da câmera traseira, com boa luz. Palma aberta é detectada mais rápido. Reinicie o jogo após alterar.</string>
     <string name="cancel">Cancelar</string>

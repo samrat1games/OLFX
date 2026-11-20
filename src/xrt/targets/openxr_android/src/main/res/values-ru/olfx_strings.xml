@@ -55,6 +55,8 @@
     <string name="camera_denied">Пока запрещено: игры не увидят ваши руки.</string>
     <string name="swap_hands">Поменять левую и правую</string>
     <string name="swap_hands_description">Включите, если левая рука определяется как правая</string>
+    <string name="onnx_hands">Трекинг рук ONNX (NPU)</string>
+    <string name="onnx_hands_description">Экспериментально: RTMDet + RTMPose на ONNX Runtime. При первом запуске загрузит около 60 МБ; до этого работает MediaPipe</string>
     <string name="tips">Советы</string>
     <string name="hands_tips">Поместите телефон в гарнитуру и держите руки в 30–60 см перед задней камерой при хорошем освещении. Открытая ладонь распознаётся быстрее. После изменения перезапустите игру.</string>
     <string name="cancel">Отмена</string>

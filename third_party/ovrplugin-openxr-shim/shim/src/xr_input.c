@@ -24,6 +24,7 @@ static XrSpace  s_lspace, s_rspace;
 float xrr_hand_grip(int h);
 float xrr_hand_trigger(int h);
 void xrr_joy_poll(void);
+int xrr_joy_orientation(int role, float q[4]);
 void xrr_joy_merge(uint32_t *buttons, float *lt, float *rt, float *lg, float *rg, float *lsx, float *lsy, float *rsx, float *rsy);
 
 typedef struct {
@@ -204,6 +205,17 @@ void xrr_input_sync(void) {
     XrResult rr = xrLocateSpace(s_rspace, g_xr.appSpace, g_xr.frameState.predictedDisplayTime, &rloc);
     st.rvalid = (rr == XR_SUCCESS && (rloc.locationFlags & POSE_VALID_BITS) == POSE_VALID_BITS);
     if (st.rvalid) st.rpose = rloc.pose;
+    {   /* OLFX: Joy-Con IMU orientation stands in for a controller whose hand is not camera-tracked */
+        float jq[4];
+        if (!st.lvalid && xrr_joy_orientation(1, jq)) {
+            st.lpose.orientation.w = jq[0]; st.lpose.orientation.x = jq[1]; st.lpose.orientation.y = jq[2]; st.lpose.orientation.z = jq[3];
+            st.lpose.position.x = -0.20f; st.lpose.position.y = -0.30f; st.lpose.position.z = -0.40f; st.lvalid = 1;
+        }
+        if (!st.rvalid && (xrr_joy_orientation(2, jq) || xrr_joy_orientation(0, jq))) {
+            st.rpose.orientation.w = jq[0]; st.rpose.orientation.x = jq[1]; st.rpose.orientation.y = jq[2]; st.rpose.orientation.z = jq[3];
+            st.rpose.position.x = 0.20f; st.rpose.position.y = -0.30f; st.rpose.position.z = -0.40f; st.rvalid = 1;
+        }
+    }
     input_publish(&st);
     {   /* DIAG: log each hand's tracked<->untracked transition (capped) */
         static int plv = -1, prv = -1, tl = 0;
