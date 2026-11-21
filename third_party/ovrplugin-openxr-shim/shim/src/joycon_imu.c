@@ -20,7 +20,7 @@ static void qrot(olfx_quat q, const float v[3], float o[3]) {
 }
 void olfx_imu_init(olfx_imu *s) {
     s->q.w = 1; s->q.x = s->q.y = s->q.z = 0;
-    s->last_ns = 0; s->gain = 0.5f; s->initialised = 0;
+    s->last_ns = 0; s->gain = 0.5f; s->initialised = 0; s->yaw_off = 0;
 }
 void olfx_imu_update(olfx_imu *s, float gx, float gy, float gz, float ax, float ay, float az, int64_t ts) {
     float an = sqrtf(ax*ax + ay*ay + az*az);
@@ -53,4 +53,33 @@ void olfx_imu_update(olfx_imu *s, float gx, float gy, float gz, float ax, float 
         s->q = qmul(corr, s->q);
     }
     qnorm(&s->q);
+}
+
+olfx_quat olfx_imu_controller_quat(const olfx_imu *s) {
+    const float h = 0.70710678f;                       // +90 deg about X
+    olfx_quat fix = {h, h, 0, 0};
+    olfx_quat q = qmul(s->q, fix);
+    float c = cosf(s->yaw_off * 0.5f), sn = sinf(s->yaw_off * 0.5f);
+    olfx_quat yaw = {c, 0, sn, 0};
+    q = qmul(yaw, q);
+    qnorm(&q);
+    return q;
+}
+
+int olfx_imu_recenter(olfx_imu *s) {
+    float saved = s->yaw_off; s->yaw_off = 0;
+    olfx_quat q = olfx_imu_controller_quat(s);
+    const float fwd[3] = {0, 0, -1}; float f[3];
+    qrot(q, fwd, f);
+    if (f[0] * f[0] + f[2] * f[2] < 0.05f) { s->yaw_off = saved; return 0; }
+    s->yaw_off = -atan2f(-f[0], -f[2]);
+    return 1;
+}
+
+void olfx_imu_arm_position(olfx_quat q, int side, float out[3]) {
+    const float fwd[3] = {0, 0, -0.30f}; float r[3];
+    qrot(q, fwd, r);
+    out[0] = 0.18f * (float)side + r[0];
+    out[1] = -0.35f + r[1];
+    out[2] = -0.05f + r[2];
 }

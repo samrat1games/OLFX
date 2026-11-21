@@ -28,6 +28,7 @@ static volatile int s_seen;
 static olfx_imu s_imu[3];
 static volatile int s_imu_seen[3];
 static volatile int s_imu_init;
+static int s_imu_centered[3];
 
 static void JNICALL native_imu(JNIEnv *env, jclass c, jint role, jfloat gx, jfloat gy, jfloat gz, jfloat ax, jfloat ay,
                                jfloat az, jlong ts) {
@@ -41,8 +42,31 @@ static void JNICALL native_imu(JNIEnv *env, jclass c, jint role, jfloat gx, jflo
 /* Fused Joy-Con orientation (role 1 = left, 2 = right, 0 = paired pad). Returns 0 until IMU samples arrive. */
 int xrr_joy_orientation(int role, float q[4]) {
     if (role < 0 || role > 2 || !s_imu_seen[role]) return 0;
-    q[0] = s_imu[role].q.w; q[1] = s_imu[role].q.x; q[2] = s_imu[role].q.y; q[3] = s_imu[role].q.z;
+    if (!s_imu_centered[role] && s_imu[role].initialised) s_imu_centered[role] = olfx_imu_recenter(&s_imu[role]);
+    olfx_quat c = olfx_imu_controller_quat(&s_imu[role]);
+    q[0] = c.w; q[1] = c.x; q[2] = c.y; q[3] = c.z;
     return 1;
+}
+
+/* 3-DoF arm-model hand position matching xrr_joy_orientation (side: -1 left, +1 right). */
+int xrr_joy_position(int role, float p[3]) {
+    float q[4];
+    if (!xrr_joy_orientation(role, q)) return 0;
+    olfx_quat c = {q[0], q[1], q[2], q[3]};
+    olfx_imu_arm_position(c, role == 1 ? -1 : 1, p);
+    return 1;
+}
+
+/* Hold SELECT (the "-" button) for ~0.5 s while pointing forward to recenter every connected Joy-Con. */
+static int s_sel_hold;
+static void joy_check_recenter(void) {
+    int sel = 0;
+    for (int r = 0; r < 3; r++) if ((s_keys[r] >> 11) & 1) sel = 1;
+    if (!sel) { s_sel_hold = 0; return; }
+    if (++s_sel_hold == 45) {   /* ~0.5 s at 90 Hz */
+        for (int r = 0; r < 3; r++) if (s_imu_seen[r]) olfx_imu_recenter(&s_imu[r]);
+        XRRLOG("joycon: recentered");
+    }
 }
 
 static int keybit(int code) {
@@ -115,6 +139,7 @@ static float dz(float v) { return (v > -0.12f && v < 0.12f) ? 0.0f : v; }
 
 void xrr_joy_merge(uint32_t *buttons, float *lt, float *rt, float *lg, float *rg, float *lsx, float *lsy, float *rsx, float *rsy) {
     if (!s_seen) return;
+    joy_check_recenter();
     uint32_t b = 0;
     float ltr = 0, rtr = 0, lgr = 0, rgr = 0, lx = 0, ly = 0, rx = 0, ry = 0;
     // paired / Pro-style gamepad
@@ -142,6 +167,7 @@ void xrr_joy_merge(uint32_t *buttons, float *lt, float *rt, float *lg, float *rg
 #else
 void xrr_joy_poll(void) {}
 int xrr_joy_orientation(int role, float q[4]) { (void)role; (void)q; return 0; }
+int xrr_joy_position(int role, float p[3]) { (void)role; (void)p; return 0; }
 void xrr_joy_merge(uint32_t *buttons, float *lt, float *rt, float *lg, float *rg, float *lsx, float *lsy, float *rsx, float *rsy) {
     (void)buttons; (void)lt; (void)rt; (void)lg; (void)rg; (void)lsx; (void)lsy; (void)rsx; (void)rsy;
 }

@@ -25,6 +25,7 @@ float xrr_hand_grip(int h);
 float xrr_hand_trigger(int h);
 void xrr_joy_poll(void);
 int xrr_joy_orientation(int role, float q[4]);
+int xrr_joy_position(int role, float p[3]);
 void xrr_joy_merge(uint32_t *buttons, float *lt, float *rt, float *lg, float *rg, float *lsx, float *lsy, float *rsx, float *rsy);
 
 typedef struct {
@@ -209,11 +210,17 @@ void xrr_input_sync(void) {
         float jq[4];
         if (!st.lvalid && xrr_joy_orientation(1, jq)) {
             st.lpose.orientation.w = jq[0]; st.lpose.orientation.x = jq[1]; st.lpose.orientation.y = jq[2]; st.lpose.orientation.z = jq[3];
-            st.lpose.position.x = -0.20f; st.lpose.position.y = -0.30f; st.lpose.position.z = -0.40f; st.lvalid = 1;
+            float jp[3];
+            if (xrr_joy_position(1, jp)) { st.lpose.position.x = jp[0]; st.lpose.position.y = jp[1]; st.lpose.position.z = jp[2]; }
+            else { st.lpose.position.x = -0.20f; st.lpose.position.y = -0.30f; st.lpose.position.z = -0.40f; }
+            st.lvalid = 1;
         }
         if (!st.rvalid && (xrr_joy_orientation(2, jq) || xrr_joy_orientation(0, jq))) {
             st.rpose.orientation.w = jq[0]; st.rpose.orientation.x = jq[1]; st.rpose.orientation.y = jq[2]; st.rpose.orientation.z = jq[3];
-            st.rpose.position.x = 0.20f; st.rpose.position.y = -0.30f; st.rpose.position.z = -0.40f; st.rvalid = 1;
+            float jp[3];
+            if (xrr_joy_position(xrr_joy_orientation(2, jq) ? 2 : 0, jp)) { st.rpose.position.x = jp[0]; st.rpose.position.y = jp[1]; st.rpose.position.z = jp[2]; }
+            else { st.rpose.position.x = 0.20f; st.rpose.position.y = -0.30f; st.rpose.position.z = -0.40f; }
+            st.rvalid = 1;
         }
     }
     input_publish(&st);
