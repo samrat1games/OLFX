@@ -186,4 +186,4 @@ Material launcher). Input is a **head-gaze pointer + any confirm key**; the G2 c
 ## Monke Go (web game) - APK + WebXR
 `monkego/web/` is the supplied WebXR game (three.js; HTTPS or localhost required). `:monkego-apk` bundles it, serves it on
 `http://localhost:8765` (loopback-only server, host-tested in `monkego-apk/test/`) and opens it in the headset browser, because a
-WebView has no WebXR. The same folder is published by `.github/workflows/monkego-pages.yml` (GitHub Pages).
+WebView has no WebXR. The same folder is published by the optional `pages` job in `.github/workflows/android.yml` (GitHub Pages).

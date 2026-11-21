@@ -1,6 +1,11 @@
 name: Android APK
 on:
   workflow_dispatch:
+    inputs:
+      pages:
+        description: Also deploy the Monke Go WebXR game to GitHub Pages
+        type: boolean
+        default: false
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -69,3 +74,22 @@ jobs:
         with:
           name: MonkeGo-apk
           path: monkego-apk/build/outputs/apk/debug/*.apk
+  pages:
+    if: ${{ inputs.pages }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - run: mkdir _site && cp -r monkego/web/. _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
