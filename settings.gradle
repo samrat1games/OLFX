@@ -51,4 +51,7 @@ include ':olfx-go'
 // OLFX launcher for Pico G2 (Pico Native SDK AAR in olfx-g2/libs).
 include ':olfx-g2'
 
+// Monke Go (web game) launcher APK.
+include ':monkego-apk'
+
 // OLFX launcher sources are compiled into :src:xrt:targets:openxr_android (one app: launcher + Monado)

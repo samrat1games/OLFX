@@ -182,3 +182,8 @@ Built on Pico's Native SDK 2.8.5.4 (`olfx-g2/libs/PvrSDK-Native-release.aar`, Pi
 project owner). `G2Activity extends VRActivity implements RenderInterface`; the SDK calls `onFrameBegin/onDrawEye` and
 `libolfx_g2` draws the same CC0 living room. The launcher is a simple 4x2 tile panel of installed apps (not the full
 Material launcher). Input is a **head-gaze pointer + any confirm key**; the G2 controller API is not used. Not run on a G2.
+
+## Monke Go (web game) - APK + WebXR
+`monkego/web/` is the supplied WebXR game (three.js; HTTPS or localhost required). `:monkego-apk` bundles it, serves it on
+`http://localhost:8765` (loopback-only server, host-tested in `monkego-apk/test/`) and opens it in the headset browser, because a
+WebView has no WebXR. The same folder is published by `.github/workflows/monkego-pages.yml` (GitHub Pages).

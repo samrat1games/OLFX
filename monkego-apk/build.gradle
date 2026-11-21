@@ -1,0 +1,27 @@
+// Monke Go launcher APK: bundles the web game, serves it on http://localhost:8765 and opens it in the headset's browser
+// (WebXR works in a real browser; a WebView has no WebXR).
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'org.olfx.monkego'
+    compileSdk project.sharedCompileSdk
+
+    defaultConfig {
+        applicationId 'org.olfx.monkego'
+        minSdkVersion 24
+        targetSdkVersion 28
+        versionCode 1
+        versionName '1.0'
+    }
+    sourceSets {
+        // assets/web/** comes from monkego/web
+        main { assets.srcDirs = ["${rootDir}/monkego"] }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    lint { abortOnError false }
+}

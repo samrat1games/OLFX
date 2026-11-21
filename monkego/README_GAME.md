@@ -1,0 +1,212 @@
+# Gorilla Rush — versão Pico G2 (e Oculus Go)
+
+> **Esta versão foi portada para o Pico G2 / G2 4K.** Veja [`PICO_G2.md`](PICO_G2.md) (instalação, o que foi alterado,
+> limitações) e [`CHANGELOG_PICO_G2.md`](CHANGELOG_PICO_G2.md). O suporte ao Oculus Go continua funcionando.
+
+# (histórico) versão Oculus Go
+
+**Gorilla Rush** é um jogo criado por **WelliDev**. Este repositório é a versão para **Oculus Go**,
+feita a partir do código original dele (o HTML original para Google Cardboard está intacto em `original/`),
+em HTML + CSS + JavaScript puro, pronta para GitHub Pages.
+
+> O jogo original foi preservado: mesmo modelo de macaco (sem pernas), mesmo mapa, mesma física de
+> colisão, mesmos acessórios, sons, multiplayer PeerJS (Tag / Casual / Infecção) e o modo Cardboard com
+> rastreamento de mãos pela câmera. A versão Oculus Go acrescenta o suporte ao headset por cima disso.
+
+## Créditos
+
+- **Gorilla Rush** — criado por **WelliDev** (jogo, mapa, modelo, acessórios, sons e multiplayer originais).
+- Camisa havaiana: “Gorilla Tag Hawaiian T-shirt” por That-one-ripper (Sketchfab, CC BY 4.0).
+- Músicas (CC0): *Chill Lofi Inspired* e *Lofi Hip Hop* por omfgdude; *Napping On A Cloud* por congusbongus (OpenGameArt).
+- Bibliotecas: three.js r128 (MIT), PeerJS (MIT), MediaPipe Hands (Apache 2.0).
+
+Os créditos também aparecem no lobby, no quadro do mundo 3D e no menu VR (*Créditos*).
+
+## Como jogar
+
+- **Oculus Go**: abra o endereço do GitHub Pages no Oculus Browser → **ENTRAR EM VR (OCULUS GO)**.
+  Você entra no SoloPlay com o menu VR aberto e escolhe mapa e modo lá dentro.
+- **Celular (VR Box / Cardboard)**: escolha um modo no lobby; a tela se divide em 2 vistas (como no original).
+  Mostre as mãos para a câmera.
+- **Desktop**: WASD / setas, arraste para olhar, Espaço pula, `Esc`/`M` abre o menu.
+
+### Controle do Oculus Go (sistema de entrada centralizado: `js/input.js`)
+
+| Entrada | No jogo | No menu |
+|---|---|---|
+| Girar o pulso com a mão no chão/parede | **Gorilla Locomotion**: empurrar para trás = ir para frente; empurrar para baixo rápido = pular | – |
+| Gatilho | **Agarrar**: a mão fica presa na superfície e o corpo se move ao redor dela (escalar, puxar-se, arremessar-se ao soltar) | Selecionar o item apontado pelo laser |
+| Clique no touchpad (centro) | Pular / impulso | Confirmar |
+| Clique nas bordas esquerda/direita do touchpad | Giro em snap (30° ou 45°, configurável) | Diminuir / aumentar valor |
+| Tocar (sem clicar) no touchpad | Assistência de movimento suave (opcional, regulável; 0% desliga) | Swipe ↑/↓ navega |
+| Segurar o touchpad 0,6 s | Abre/fecha o menu | Fecha o menu |
+| Botão Voltar | Fora do modo VR: abre o menu (interceptado via `history`). Dentro do VR o sistema do Go usa o botão para sair da apresentação; o jogo pausa e mostra **VOLTAR AO VR**. | |
+
+Sem controle (Cardboard) o menu funciona por **olhar**: olhe para cima 1,5 s para abrir; mire um item e
+espere 1,5 s (ou toque na tela). O toque continua sendo o pulo, como no original.
+
+### Gorilla Locomotion com um único controle 3DoF (`js/locomotion.js`)
+
+- **Mão real**: modelo de braço — ombro fixo no corpo + direção do controle. A *sensibilidade* amplifica o
+  ângulo do pulso, então movimentos pequenos de pulso viram braçadas grandes.
+- **Duas mãos com um controle — "Troca automática" (padrão)**: o controle move uma mão por vez. Quando
+  ela termina uma braçada (encostou numa superfície e levantou), fica **plantada exatamente onde estava**
+  (fixa no mundo, sem tremer) e o controle passa a mover a outra mão — as mãos se revezam como na corrida
+  do Gorilla Tag. Só a mão ativa empurra (sem impulso duplo); a mão que assume parte de onde está
+  (sem salto) e a plantada volta ao corpo quando fica fora de alcance. Testado: 0 mm de tremor na mão
+  plantada; mesmo deslocamento que o modo de uma mão (sem impulso extra).
+- **Estabilização do controle**: filtro adaptativo na orientação 3DoF (suave parado, sem atraso em
+  movimentos rápidos), regulável.
+- Modos antigos ainda disponíveis: *Alternada* (espelho com atraso), *Espelhada*, *Só uma mão*.
+- **Cabeça**: define a direção do corpo.
+- **Física**: o impulso original multiplicado por *Força do impulso* (padrão **2,2×**), limitado pela
+  *Velocidade máxima*; colisão contínua vertical para impulsos fortes não atravessarem o chão.
+- **Velocidade do movimento**: *Rápido* (padrão, valores atuais), *Médio* (70 %) ou *Lento* (45 %) —
+  escala impulso, velocidade máxima, pulo, arremesso, assistência e teclado/gamepad de uma vez.
+- Ajustáveis (lobby → AJUSTES, ou menu VR → Configurações): velocidade do movimento, força do impulso, velocidade máxima,
+  gravidade, atrito, sensibilidade, assistência, comprimento dos braços, qualidade gráfica, mão do
+  controle, giro, nomes. Valores ficam salvos no navegador.
+
+## Identidade da versão Oculus Go
+
+- **Estilos do macaco** (aba ESTILO / menu VR): *Monke* (pelagem marrom e rosto escuro, inspirado no
+  Gorilla Tag — padrão), *Baboon* (cinza-oliva e rosto rosado, inspirado no Scary Baboon) e *Original*.
+  Braços mais longos por padrão (1,32×). Cor e estilo ficam salvos e são enviados aos outros jogadores.
+- **Clareira-lobby** na Floresta com o **quadro Gorilla Rush** no mundo: modo, sala, lista de monkes com
+  status (pegador/infectado) e tags, como jogar e a música atual.
+- **Tag como nos fan games**: quem é pego congela ~1 s (tag freeze), ouve o som de tag e recebe a skin de
+  lava; o pegador/infectado fica um pouco mais rápido (+15 %).
+
+## Modos
+
+- **SoloPlay** – sozinho, sem bots, explorar e escalar.
+- **Lava Run** – a lava (textura original do jogo) sobe cada vez mais rápido; pontos = segundos vivo;
+  recorde salvo por área; névoa alaranjada e ronco grave quando ela chega perto, bip a cada 10 s,
+  chiado ao morrer, reinício automático.
+- **Tag multiplayer** – o multiplayer **original** (PeerJS, P2P): entrada rápida em sala pública (Tag),
+  ou sala por código (Casual / Infecção). Sincronização, tag, infecção, nomes sobre os jogadores e
+  **placar** (menu VR → Placar: quem está com o pegador/infectado e quantos tags cada um fez).
+  Como o multiplayer já existia, **não foi usado Supabase** (não há SQL a configurar).
+  Usa **rede própria**, separada da do Gorilla Rush original: salas com prefixo `grvr-` (o original usa
+  `grush-`) e suporte a um **servidor de sinalização próprio** (pasta `server/`). Configuração em `js/netconfig.js`.
+
+### O que foi corrigido para o multiplayer funcionar de verdade
+
+- **Rede própria** (`js/netconfig.js`): salas `grvr-` exclusivas desta versão. Sinalização: o servidor
+  próprio de `server/` quando configurado (veja `server/README.md` — pronto para o Render gratuito),
+  senão o servidor público do PeerJS. ICE: STUN do Google + TURN do PeerJS. PeerJS 1.5.4 nos navegadores
+  atuais e 1.3.2 no Oculus Go (o Chromium 77 não executa o 1.5.4) — os dois interoperam (testado nos dois
+  sentidos, tanto pelo servidor próprio quanto pelo público).
+- **Timeouts**: entrar numa sala esperava só 2,5 s; pela internet a conexão demora mais e cada jogador
+  acabava criando a própria sala. Agora 8–10 s (salas inexistentes continuam sendo descartadas na hora).
+- **Spawn espalhado** no online: antes todos nasciam no mesmo ponto e a Infecção acabava na hora.
+- **Migração de host**: se o host sai (ou some — heartbeat de 5 s), os outros reconectam à mesma sala e
+  o primeiro vira o novo host, sem voltar ao solo.
+- **Reconexão** ao servidor PeerJS quando o websocket ocioso cai; conexões mortas são removidas.
+- **Salas públicas se unem**: quem ficou sozinho em `pub2..6` por 20 s volta a procurar a partir da `pub1`.
+- HUD mostra sala, nº de jogadores e se você é o pegador; aviso claro quando está offline.
+
+Testado com 3 navegadores reais conectando pelo servidor PeerJS público (sala por código, infecção,
+saída do host com migração) e entrada rápida com 2 jogadores.
+
+## Música
+
+Música chill de fundo, **CC0 (domínio público)**, do OpenGameArt, tocando em sequência:
+
+| Faixa | Autor | Fonte |
+|---|---|---|
+| Chill Lofi Inspired | omfgdude | https://opengameart.org/content/chill-lofi-inspired |
+| Lofi Hip Hop | omfgdude | https://opengameart.org/content/lofi-hip-hop |
+| Napping On A Cloud | congusbongus | https://opengameart.org/content/napping-on-a-cloud |
+
+Reconvertidas para MP3 80 kbps (`assets/music/`), tocadas por streaming (só a faixa atual é baixada).
+Volume em AJUSTES/menu VR (0 = desligada); *Próxima música* no lobby e no menu VR (item Música:
+◀ ▶ volume, clique troca a faixa). A música abaixa quando a lava chega perto no Lava Run.
+
+## Mapas
+
+Somente o mapa que veio na source (`assets/maps/park.bin`). O seletor de mapas leva às áreas que
+existem nele (coordenadas extraídas da geometria do próprio mapa):
+
+| Área | Onde fica no mapa original |
+|---|---|
+| Floresta | clareira-lobby com o quadro Gorilla Rush, toco, árvores e casa na árvore |
+| Cânions | paredões `canyon*`, cactos e almofadas gigantes (z ≈ −50) |
+| Cavernas | subsolo com cristais, caixas e carrinhos de mina (y ≈ −14) |
+| Montanhas | penhasco rochoso alto com setas de escalada (spawn de novato original) |
+
+City, Beach, Clouds, Basement e Bayou **não existem** na source; conforme pedido, nenhum mapa novo foi
+criado e não há botões sem função para eles.
+
+## Compatibilidade com o Oculus Go (o que foi verificado, não presumido)
+
+O navegador do Go (Oculus Browser, Chromium 7x) **não** tem várias APIs que o original usava:
+
+| Problema no original | Solução |
+|---|---|
+| `DecompressionStream` (Chrome 80+) para abrir o mapa | mapa servido também descompactado (`park.bin`); `.gz` só quando a API existe |
+| PeerJS 1.5.4 usa `?.` (erro de sintaxe no Chromium 77) | 1.5.4 onde roda; 1.3.2 (ES5) só no Go, com os mesmos servidores — interopera com o original |
+| CSS `inset`, `min()` e `gap` em flexbox | propriedades equivalentes |
+| WebXR pode não existir no Go | detecção real: **WebXR** (`isSessionSupported`) → **WebVR 1.1** (`getVRDisplays`) → Cardboard → tela |
+| three.js r128 não tem mais WebVR | renderizador WebVR 1.1 próprio em `js/vr.js`: `requestPresent`, `VRFrameData`, projeção/visão por olho, `submitFrame`, pose reamostrada logo antes de desenhar (menor latência) |
+| ~4,4 MB em base64 num único HTML | assets separados (`assets/`), MediaPipe só baixado no modo câmera |
+
+Testado em Chromium headless com o UA do Oculus Go e um VRDisplay/controle Go simulados
+(apresentação estéreo, laser do menu, gatilho, snap turn, menu por toque longo, locomoção por pulso,
+escalada) e no modo celular/Cardboard. **Não foi testado em um Oculus Go físico.**
+
+## Otimização (Snapdragon 821 / Adreno 530)
+
+- Qualidade *Auto* = Baixa no Go: sem sombras, névoa curta, far plane 100 m, olho 1024 px (0,8× de 1280).
+- WebXR: `framebufferScaleFactor` pela qualidade e foveação fixa quando o navegador suporta.
+- Mapa original já é agrupado por material + células de 32 m (≈15–20 draw calls); frustum culling do three;
+  folhagem com alpha-test desligada por distância (LOD por distância).
+- Colisão por grade 2D de triângulos (original) + raios curtos; nenhuma alocação nova no laço de render do WebVR.
+- Carregamento progressivo: modelo do jogador → mapa → acessórios/sons em paralelo; MediaPipe sob demanda.
+
+## Limitações reais
+
+- **72 Hz**: a página não controla a taxa; o Oculus Browser decide (60 ou 72 Hz). Metas de custo foram
+  feitas para 72 Hz.
+- **3DoF**: não existe posição real das mãos; a locomoção é uma aproximação por modelo de braço.
+  O deslocamento (drift) do controle é corrigido com o recentrar do sistema ou *Recentralizar giro*.
+- **Botão Voltar dentro do VR** é reservado pelo sistema; ele encerra o VR (o jogo pausa e oferece voltar).
+- **Texturas comprimidas** (ETC/ASTC/Basis): não usadas — exigiriam reconverter os assets originais e um
+  transcoder; as texturas do jogo já são pequenas (JPEG/PNG ≤ 256 px no mapa).
+- **Multiplayer**: enquanto o servidor próprio (`server/`) não for publicado, a sinalização usa o servidor
+  público do PeerJS. O GitHub Pages não executa servidores, por isso ele precisa ir para um host de Node
+  (Render/Railway/Fly). O jogo é P2P (WebRTC); sem um TURN próprio, redes com NAT muito restritivo podem
+  depender do TURN público do PeerJS.
+- **Áudio/música** só iniciam após um toque/clique (política dos navegadores).
+- A origem dos modelos do mapa e do macaco é a da source original; a camisa havaiana é CC BY 4.0
+  (“Gorilla Tag Hawaiian T-shirt” por That-one-ripper, Sketchfab). Confirme as licenças da source antes
+  de distribuir comercialmente.
+
+## Estrutura
+
+```
+index.html            lobby + carregamento dos scripts
+css/style.css         estilos (do original, compatíveis com Chromium 77)
+js/platform.js        detecção do dispositivo/APIs + configurações persistentes
+js/core.js            NÚCLEO ORIGINAL (render, colisão, rig, mapa, rede, física) com ganchos HOOK.*
+js/vr.js              WebXR / WebVR 1.1 / Cardboard
+js/input.js           entrada centralizada (Go via WebVR/WebXR, gamepad, teclado, toque, olhar)
+js/locomotion.js      Gorilla Locomotion 3DoF híbrido
+js/maps.js            áreas do mapa original
+js/modes.js           SoloPlay, Lava Run, placar
+js/vrmenu.js          menu VR 3D e HUD 3D
+js/music.js           música de fundo (playlist CC0)
+js/monke.js           estilos Monke/Baboon, quadro no mundo, tag freeze
+js/main.js            boot e lobby
+js/netconfig.js       rede própria: prefixo das salas, servidor de sinalização, STUN/TURN
+server/               servidor de sinalização PeerJS próprio (Node) + blueprint do Render
+lib/                  three r128, GLTFLoader, SkeletonUtils, PeerJS 1.5.4 e 1.3.2 (sem CDN obrigatório)
+assets/               modelo, acessórios, mapa, texturas, sons, fonte (extraídos do original) + music/ (CC0)
+original/             o HTML original do Gorilla Rush, intacto
+```
+
+## Publicação (GitHub Pages)
+
+Todos os caminhos são relativos e não há etapa de build. O workflow `.github/workflows/pages.yml`
+publica a raiz do repositório no GitHub Pages a cada push. Para rodar localmente:
+`python3 -m http.server` e abra `http://localhost:8000` (WebXR/WebVR exigem HTTPS fora do localhost).
