@@ -16,12 +16,21 @@ android {
         versionName '1.0'
     }
     sourceSets {
-        // assets/web/** comes from monkego/web
-        main { assets.srcDirs = ["${rootDir}/monkego"] }
+        // assets/web/** is a copy of monkego/web without the *.gz twins (AGP rejects park.bin + park.bin.gz as duplicates;
+        // the game falls back to the uncompressed map when the .gz is missing)
+        main { assets.srcDirs = ["${buildDir}/webassets"] }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
     lint { abortOnError false }
+}
+
+tasks.register('prepareWeb', Copy) {
+    from("${rootDir}/monkego/web") { exclude '**/*.gz' }
+    into "${buildDir}/webassets/web"
+}
+tasks.configureEach { t ->
+    if (t.name.startsWith('merge') && t.name.endsWith('Assets')) t.dependsOn 'prepareWeb'
 }
