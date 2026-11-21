@@ -15,6 +15,7 @@ final class G2Host {
     static native void nativeFrameBegin(float[] quat, float[] pos, float ipd, float fov, int eyeW, int eyeH);
     static native void nativeDrawEye(int eye);
     static native void nativeSetPressed(boolean down);
+    static native void nativeController(float[] rot, float[] pos, boolean pressed, boolean valid);
     static native void nativeShutdown();
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());

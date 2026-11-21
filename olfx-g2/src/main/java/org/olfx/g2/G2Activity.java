@@ -18,6 +18,11 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import com.picovr.vractivity.Eye;
 import com.picovr.vractivity.HmdState;
+import com.picovr.client.HbController;
+import com.picovr.client.HbListener;
+import com.picovr.client.HbManager;
+import com.picovr.client.HbTool;
+import com.picovr.client.Orientation;
 import com.picovr.vractivity.RenderInterface;
 import com.psmart.vrlib.PicovrSDK;
 import java.util.ArrayList;
@@ -38,6 +43,11 @@ public class G2Activity extends com.picovr.vractivity.VRActivity implements Rend
     private final List<ResolveInfo> apps = new ArrayList<>();
     private int page;
     private int eyeW = 1024, eyeH = 1024;
+    // Pico G2 controller (Hummingbird) + SDK arm model
+    private HbManager hbManager;
+    private volatile HbController hb;
+    private final float[] ctrlRot = new float[4], ctrlPos = new float[3], zero3 = new float[3];
+    private final float[] ctrlQuat = new float[4];
 
     @Override
     protected void onCreate(Bundle b) {
@@ -48,6 +58,19 @@ public class G2Activity extends com.picovr.vractivity.VRActivity implements Rend
         addContentView(panel, new FrameLayout.LayoutParams(1280, 720));
         panel.setTranslationX(-6000f);
         G2Host.panel = panel;
+        try {
+            hbManager = new HbManager(this);
+            hbManager.setHbListener(new HbListener() {
+                @Override public void onConnect() {}
+                @Override public void onDisconnect() {}
+                @Override public void onDataUpdate() {}
+                @Override public void onReCenter() {}
+                @Override public void onBindService() {}
+            });
+            hbManager.InitServices();
+        } catch (Throwable t) {
+            hbManager = null;   // no controller service: head-gaze pointer stays active
+        }
         panel.post(new Runnable() {
             @Override
             public void run() {
@@ -154,10 +177,32 @@ public class G2Activity extends com.picovr.vractivity.VRActivity implements Rend
     protected void onResume() {
         super.onResume();
         G2Host.start();
+        try {
+            if (hbManager != null) {
+                hbManager.Resume();
+                hb = hbManager.getHbController();
+                if (hb != null) {
+                    hb.Start();
+                    hb.startUpdateThread();
+                }
+                // right-handed default (0) / left-handed (1) from the system setting; gaze-blend while moving; 15 deg pointer tilt
+                PicovrSDK.setArmModelParameter(PicovrSDK.getPvrHandness(this), 1, 0f, 0f, 15f);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
     protected void onPause() {
+        try {
+            if (hb != null) {
+                hb.stopUpdateThread();
+                hb.Stop();
+            }
+            if (hbManager != null) hbManager.Pause();
+        } catch (Throwable ignored) {
+        }
+        hb = null;
         G2Host.stop();
         super.onPause();
     }
@@ -175,9 +220,35 @@ public class G2Activity extends com.picovr.vractivity.VRActivity implements Rend
         return super.dispatchKeyEvent(e);
     }
 
+    /** Feeds the Hummingbird controller to the SDK arm model and passes the resulting pointer pose to the renderer. */
+    private void updateController() {
+        HbController c = hb;
+        boolean valid = false, pressed = false;
+        try {
+            if (c != null && c.getConnectState() == HbTool.STATE_CONNECTED) {
+                Orientation o = c.getOrientation();
+                if (o != null) {
+                    ctrlQuat[0] = o.x; ctrlQuat[1] = o.y; ctrlQuat[2] = o.z; ctrlQuat[3] = o.w;
+                    float[] acc = c.getAccel(), gyro = c.getAngular();
+                    int[] keys = c.keyData;
+                    PicovrSDK.setControllerData(ctrlQuat, acc != null ? acc : zero3, gyro != null ? gyro : zero3, keys != null ? keys : new int[8]);
+                    PicovrSDK.calcArmModelParameters();
+                    PicovrSDK.getPointerPose(ctrlRot, ctrlPos);
+                    valid = true;
+                    pressed = c.getTrigerKeyEvent() == 1 || c.getButtonState(HbTool.ButtonNum.click);
+                    if (c.getButtonState(HbTool.ButtonNum.app)) PicovrSDK.resetSensor(0);   // App button recenters the view
+                }
+            }
+        } catch (Throwable t) {
+            valid = false;
+        }
+        G2Host.nativeController(ctrlRot, ctrlPos, pressed, valid);
+    }
+
     // ---- RenderInterface (render thread) ----
     @Override
     public void onFrameBegin(HmdState s) {
+        updateController();
         G2Host.nativeFrameBegin(s.getOrientation(), s.getPos(), s.getIpd(), s.getFov(), eyeW, eyeH);
     }
 

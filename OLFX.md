@@ -181,7 +181,7 @@ launching a game pauses it and the game gets the headset's own OpenXR runtime. N
 Built on Pico's Native SDK 2.8.5.4 (`olfx-g2/libs/PvrSDK-Native-release.aar`, Pico's proprietary SDK, supplied by the
 project owner). `G2Activity extends VRActivity implements RenderInterface`; the SDK calls `onFrameBegin/onDrawEye` and
 `libolfx_g2` draws the same CC0 living room. The launcher is a simple 4x2 tile panel of installed apps (not the full
-Material launcher). Input is a **head-gaze pointer + any confirm key**; the G2 controller API is not used. Not run on a G2.
+Material launcher). Input: the **G2 controller** (Hummingbird: `HbManager`/`HbController`) feeds the SDK arm model (`setControllerData` -> `calcArmModelParameters` -> `getPointerPose`); the pointer pose is smoothed with a One Euro filter (`tools/olfx_scene/one_euro.h`, host-tested: ~4x less jitter when still, ~30 ms lag when fast), a laser and controller body are drawn, trigger/touchpad click = tap, App button = recenter. Without a connected controller it falls back to head gaze + any confirm key. Not run on a G2; quaternion order and arm-model space are taken from the SDK docs.
 
 ## Monke Go (web game) - APK + WebXR
 `monkego/web/` is the supplied WebXR game (three.js; HTTPS or localhost required). `:monkego-apk` bundles it, serves it on
